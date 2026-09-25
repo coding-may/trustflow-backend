@@ -2,8 +2,9 @@ import { Module, Global, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
 import { DistributedLockService } from './distributed-lock.service';
 import { config } from '../../config/env.config';
+import { REDIS_CLIENT } from './redis.constants';
 
-export const REDIS_CLIENT = 'REDIS_CLIENT';
+export { REDIS_CLIENT } from './redis.constants';
 
 /**
  * Build the app's ioredis client from `REDIS_URL`, or `null` when it is unset.

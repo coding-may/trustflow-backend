@@ -82,7 +82,14 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ## Security Features
 
 1. **Challenge Expiration**: Challenges expire after 60 seconds to prevent replay attacks
-2. **One-Time Use**: Each challenge can only be used once
+2. **One-Time Use**: Each challenge can only be used once — `NonceStoreService.consume()` atomically
+   reads and deletes the pending challenge (`GETDEL`), so a second `/auth/verify` call for the same
+   address always fails with "Challenge not found, expired, or already consumed", regardless of
+   whether the first call's signature was valid. **A failed signature still burns the challenge**:
+   since `consume()` runs before signature verification, an attacker cannot brute-force signatures
+   against a single outstanding challenge — each attempt requires a fresh `GET /auth/challenge`.
+   `markNonceUsed()` additionally marks the nonce itself used (atomic `SET NX`) immediately after a
+   *valid* signature, as defense in depth against the nonce being reused across a distinct challenge.
 3. **Stellar Signature Verification**: Uses @stellar/stellar-sdk for cryptographic verification
 4. **JWT Expiration**: Tokens expire after 24 hours
 5. **Address Validation**: Validates Stellar public key format (G-prefixed, 56 characters)

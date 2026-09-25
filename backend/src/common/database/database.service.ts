@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { Pool, QueryResult, QueryResultRow } from 'pg';
-import { PG_POOL } from './database.module';
+import { PG_POOL } from './database.constants';
 
 /**
  * Thin wrapper around the Core DB connection pool. Every query goes through here rather

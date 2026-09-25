@@ -288,7 +288,13 @@ export class GigController {
   @Put(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth('JWT-auth')
-  @ApiOperation({ summary: 'Update an open gig solicitation' })
+  @ApiOperation({
+    summary: 'Update an open gig solicitation',
+    description:
+      'Updating `responseWindowHours` resets the response deadline to `now + responseWindowHours`, ' +
+      'replacing (not extending) the current `respondBy`. Only applies while the gig is `open`; ' +
+      'omit the field to leave the deadline unchanged.',
+  })
   @ApiParam({ name: 'id', description: 'Gig ID', example: 'gig-1234567890-ab12cd' })
   @ApiResponse({ status: 200, description: 'Gig updated successfully' })
   @ApiResponse({ status: 400, description: 'Gig is not open' })

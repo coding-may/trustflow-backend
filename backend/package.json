@@ -16,6 +16,7 @@
     "lint:check": "eslint \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
+    "check:cycles": "madge --circular --extensions ts src",
     "prepare": "cd .. && husky backend/.husky || true"
   },
   "lint-staged": {
@@ -69,6 +70,7 @@
     "husky": "^9.1.7",
     "jest": "^29.5.0",
     "lint-staged": "^15.2.10",
+    "madge": "^8.0.0",
     "prettier": "^3.0.0",
     "supertest": "^6.3.0",
     "ts-jest": "^29.1.0",

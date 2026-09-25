@@ -76,6 +76,12 @@ jobs:
         working-directory: ./backend
         run: npx tsc --noEmit
 
+      # Catches a token/service import cycle (e.g. #429) before it ships: Nest silently
+      # resolves the cycled DI token to `undefined` at runtime instead of failing to compile.
+      - name: Circular dependency check
+        working-directory: ./backend
+        run: npm run check:cycles
+
       # Belt-and-suspenders alongside the service's own --health-cmd/--health-retries above
       # (which gates job startup, not necessarily readiness by the time this step runs):
       # explicitly retry a real connection before trusting REDIS_URL in the test step.

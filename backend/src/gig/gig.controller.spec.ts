@@ -13,6 +13,7 @@ describe('GigController', () => {
     findByCreator: jest.fn(),
     accept: jest.fn(),
     cancel: jest.fn(),
+    update: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -171,6 +172,36 @@ describe('GigController', () => {
 
       expect(result).toEqual(gig);
       expect(mockGigService.cancel).toHaveBeenCalledWith('gig-1');
+    });
+  });
+
+  describe('update', () => {
+    it('validates and forwards responseWindowHours to the service (#432)', async () => {
+      const gig = { id: 'gig-1', title: 'New title', status: GigStatus.OPEN };
+      mockGigService.update.mockResolvedValue(gig);
+
+      const result = await controller.update('gig-1', {
+        title: 'New title',
+        responseWindowHours: 12,
+      } as any);
+
+      expect(result).toEqual(gig);
+      expect(mockGigService.update).toHaveBeenCalledWith('gig-1', {
+        title: 'New title',
+        responseWindowHours: 12,
+      });
+    });
+
+    it('rejects a non-positive responseWindowHours before hitting the service', async () => {
+      await expect(controller.update('gig-1', { responseWindowHours: 0 } as any)).rejects.toThrow();
+      expect(mockGigService.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a responseWindowHours beyond the 30-day cap before hitting the service', async () => {
+      await expect(
+        controller.update('gig-1', { responseWindowHours: 24 * 30 + 1 } as any),
+      ).rejects.toThrow();
+      expect(mockGigService.update).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,8 +1,9 @@
 import { Global, Logger, Module } from '@nestjs/common';
 import { Pool, PoolConfig } from 'pg';
 import { DatabaseService } from './database.service';
+import { PG_POOL } from './database.constants';
 
-export const PG_POOL = 'PG_POOL';
+export { PG_POOL } from './database.constants';
 
 const DEFAULT_POOL_MAX = 10;
 const DEFAULT_IDLE_TIMEOUT_MS = 30_000;

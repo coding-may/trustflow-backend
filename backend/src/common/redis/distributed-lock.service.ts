@@ -1,7 +1,7 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Redis } from 'ioredis';
-import { REDIS_CLIENT } from './redis.module';
+import { REDIS_CLIENT } from './redis.constants';
 
 // Compare-and-delete: only release a lock if it's still held by the token
 // that acquired it (avoids releasing another instance's lock after this

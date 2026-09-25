@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { UnauthorizedException } from '@nestjs/common';
+import { Keypair } from '@stellar/stellar-sdk';
 import { AuthService } from './auth.service';
 import { NonceStoreService } from './nonce-store.service';
 
@@ -18,7 +19,6 @@ describe('AuthService', () => {
     mockNonceStore = {
       store: jest.fn(),
       consume: jest.fn(),
-      isNonceReplay: jest.fn(),
       markNonceUsed: jest.fn(),
       hasActiveChallenge: jest.fn(),
     };
@@ -79,35 +79,39 @@ describe('AuthService', () => {
       );
     });
 
-    it('should throw when replay detected', async () => {
-      const testNonce = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
-      const challenge = `Sign this message to authenticate with TrustFlow: ${testNonce}`;
-      mockNonceStore.consume.mockResolvedValue(challenge);
-      mockNonceStore.isNonceReplay.mockResolvedValue(true);
+    // #431: a fresh, never-used nonce must be accepted — store() no longer premarks it
+    // used, so a valid signature over a just-issued challenge succeeds and marks the
+    // nonce used via the atomic markNonceUsed() check-and-set (not a separate pre-check).
+    it('returns true for a valid signature and marks the nonce used exactly once', async () => {
+      const keypair = Keypair.random();
+      const nonce = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+      const challenge = `Sign this message to authenticate with TrustFlow: ${nonce}`;
+      const signature = keypair.sign(Buffer.from(challenge, 'utf-8')).toString('base64');
 
-      await expect(service.verifySignature(TEST_ADDRESS, TEST_SIGNATURE)).rejects.toThrow(
-        UnauthorizedException,
-      );
-      await expect(service.verifySignature(TEST_ADDRESS, TEST_SIGNATURE)).rejects.toThrow(
-        'Challenge already used',
-      );
+      mockNonceStore.consume.mockResolvedValue(challenge);
+      mockNonceStore.markNonceUsed.mockResolvedValue(true);
+
+      const isValid = await service.verifySignature(keypair.publicKey(), signature);
+
+      expect(isValid).toBe(true);
+      expect(mockNonceStore.markNonceUsed).toHaveBeenCalledWith(nonce);
     });
 
-    it('should call markNonceUsed after successful verification', async () => {
-      const testNonce = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
-      const challenge = `Sign this message to authenticate with TrustFlow: ${testNonce}`;
+    it('should throw when the nonce was already marked used (replay)', async () => {
+      const keypair = Keypair.random();
+      const nonce = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
+      const challenge = `Sign this message to authenticate with TrustFlow: ${nonce}`;
+      const signature = keypair.sign(Buffer.from(challenge, 'utf-8')).toString('base64');
+
       mockNonceStore.consume.mockResolvedValue(challenge);
-      mockNonceStore.isNonceReplay.mockResolvedValue(false);
-      mockNonceStore.markNonceUsed.mockResolvedValue(undefined);
+      mockNonceStore.markNonceUsed.mockResolvedValue(false);
 
-      try {
-        await service.verifySignature(TEST_ADDRESS, TEST_SIGNATURE);
-      } catch {
-        // Signature will fail since we're using a mock signature, that's expected
-      }
-
-      // isNonceReplay and markNonceUsed should be called after consume
-      expect(mockNonceStore.isNonceReplay).toHaveBeenCalledWith(testNonce);
+      await expect(service.verifySignature(keypair.publicKey(), signature)).rejects.toThrow(
+        UnauthorizedException,
+      );
+      await expect(service.verifySignature(keypair.publicKey(), signature)).rejects.toThrow(
+        'Challenge already used',
+      );
     });
   });
 

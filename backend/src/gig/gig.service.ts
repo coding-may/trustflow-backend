@@ -7,6 +7,7 @@ import {
   OnModuleInit,
   Optional,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { MetricsService } from '../monitoring/metrics.service';
@@ -199,7 +200,13 @@ export class GigService implements OnModuleInit {
     const status = query.status ?? GigStatus.OPEN;
     const page = query.page ?? DEFAULT_GIG_SEARCH_PAGE;
     const limit = query.limit ?? DEFAULT_GIG_SEARCH_LIMIT;
-    const cacheKey = this.searchCacheKey(status, page, limit);
+    const cacheKey = this.searchCacheKey(
+      status,
+      page,
+      limit,
+      query.minBudgetXLM,
+      query.maxBudgetXLM,
+    );
 
     const cached = await this.readSearchCache(cacheKey);
     if (cached) return cached;
@@ -261,6 +268,9 @@ export class GigService implements OnModuleInit {
     }
     if (dto.title !== undefined) gig.title = dto.title;
     if (dto.budgetXLM !== undefined) gig.budgetXLM = dto.budgetXLM;
+    if (dto.responseWindowHours !== undefined) {
+      gig.respondBy = new Date(Date.now() + dto.responseWindowHours * 60 * 60 * 1000).toISOString();
+    }
     await this.persistGig(gig);
     return gig;
   }
@@ -326,13 +336,19 @@ export class GigService implements OnModuleInit {
     await this.invalidateSearchCache();
   }
 
-  /** Writes a gig while keeping it in the open-expiry index if still open. */
+  /**
+   * Writes a gig while keeping the open-expiry index (`GIGS_OPEN_BY_RESPOND_BY_KEY`) in sync
+   * with its (possibly just-changed) `respondBy` deadline — otherwise `findExpirable()`'s
+   * sweep would keep using a stale deadline after `update()` extends/shortens the response
+   * window (#432).
+   */
   private async persistGig(gig: Gig): Promise<void> {
     if (this.redis) {
       try {
         const results = await this.redis
           .multi()
           .set(this.gigKey(gig.id), JSON.stringify(gig))
+          .zadd(GIGS_OPEN_BY_RESPOND_BY_KEY, new Date(gig.respondBy).getTime(), gig.id)
           .exec();
         this.assertTransactionOk(results);
         await this.invalidateSearchCache();
@@ -389,8 +405,28 @@ export class GigService implements OnModuleInit {
     return `${GIGS_BY_CREATOR_PREFIX}${address}`;
   }
 
-  private searchCacheKey(status: GigStatus, page: number, limit: number): string {
-    return `${GIGS_SEARCH_CACHE_PREFIX}${status}:${page}:${limit}`;
+  /**
+   * Budget filters are hashed rather than interpolated raw so that arbitrary/malformed
+   * `minBudgetXLM`/`maxBudgetXLM` query values can't grow the cache key space unboundedly.
+   * Both bounds are normalized (parsed and re-stringified) first so that equivalent values
+   * (e.g. "500" vs "500.0") share a cache entry instead of needlessly fragmenting it.
+   */
+  private searchCacheKey(
+    status: GigStatus,
+    page: number,
+    limit: number,
+    minBudgetXLM?: string,
+    maxBudgetXLM?: string,
+  ): string {
+    const filterHash = this.budgetFilterHash(minBudgetXLM, maxBudgetXLM);
+    return `${GIGS_SEARCH_CACHE_PREFIX}${status}:${page}:${limit}:${filterHash}`;
+  }
+
+  private budgetFilterHash(minBudgetXLM?: string, maxBudgetXLM?: string): string {
+    const min = minBudgetXLM !== undefined ? parseFloat(minBudgetXLM) : undefined;
+    const max = maxBudgetXLM !== undefined ? parseFloat(maxBudgetXLM) : undefined;
+    const normalized = `${min ?? ''}:${max ?? ''}`;
+    return createHash('sha256').update(normalized).digest('hex').slice(0, 16);
   }
 
   private getSearchCacheTtlSeconds(): number {

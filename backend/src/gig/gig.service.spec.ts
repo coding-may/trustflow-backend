@@ -388,6 +388,59 @@ describe('GigService', () => {
       });
     });
 
+    describe('update', () => {
+      it('applies title and budget changes', async () => {
+        const gig = await service.create(validDto);
+
+        const updated = await service.update(gig.id, { title: 'New title', budgetXLM: '999' });
+
+        expect(updated.title).toBe('New title');
+        expect(updated.budgetXLM).toBe('999');
+      });
+
+      it('throws when the gig is not open', async () => {
+        const gig = await service.create(validDto);
+        await service.cancel(gig.id);
+
+        await expect(service.update(gig.id, { title: 'New title' })).rejects.toThrow(
+          BadRequestException,
+        );
+      });
+
+      // #432: responseWindowHours was validated and accepted by the controller/DTO but
+      // silently dropped by the service, leaving `respondBy` (and the expiry sweep) unchanged.
+      it('applies responseWindowHours to respondBy, and the sweep honors the new deadline', async () => {
+        jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+        try {
+          const gig = await service.create(validDto);
+          const originalRespondBy = gig.respondBy;
+
+          const updated = await service.update(gig.id, { responseWindowHours: 1 });
+
+          expect(updated.respondBy).not.toBe(originalRespondBy);
+          expect(new Date(updated.respondBy).getTime()).toBe(Date.now() + 60 * 60 * 1000);
+
+          // Not yet due at +30 minutes.
+          jest.advanceTimersByTime(30 * 60 * 1000);
+          expect((await service.findExpirable()).map(g => g.id)).not.toContain(gig.id);
+
+          // Past the new 1-hour deadline at +61 minutes total.
+          jest.advanceTimersByTime(31 * 60 * 1000);
+          expect((await service.findExpirable()).map(g => g.id)).toContain(gig.id);
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+
+      it('leaves respondBy unchanged when responseWindowHours is omitted', async () => {
+        const gig = await service.create(validDto);
+
+        const updated = await service.update(gig.id, { title: 'New title' });
+
+        expect(updated.respondBy).toBe(gig.respondBy);
+      });
+    });
+
     describe('expire', () => {
       it('marks an open gig as expired', async () => {
         const gig = await service.create(validDto);
@@ -434,8 +487,49 @@ describe('GigService', () => {
 
       await service.search();
 
-      expect(redis.set).toHaveBeenCalledWith('gigs:search:open:1:20', expect.any(String), 'EX', 45);
+      expect(redis.set).toHaveBeenCalledWith(
+        expect.stringMatching(/^gigs:search:open:1:20:[0-9a-f]{16}$/),
+        expect.any(String),
+        'EX',
+        45,
+      );
       delete process.env.GIG_SEARCH_CACHE_TTL_SECONDS;
+    });
+
+    it('does not share a cache entry between an unfiltered search and a budget-filtered one (#430)', async () => {
+      const redis = makeInMemoryRedis();
+      service = await buildService(redis);
+      await service.create({ ...validDto, budgetXLM: '10' });
+      await service.create({ ...validDto, budgetXLM: '1000' });
+
+      const filtered = await service.search({ minBudgetXLM: '500' });
+      expect(filtered.total).toBe(1);
+      expect(filtered.items[0].budgetXLM).toBe('1000');
+
+      const unfiltered = await service.search({});
+      expect(unfiltered.total).toBe(2);
+
+      const maxFiltered = await service.search({ maxBudgetXLM: '50' });
+      expect(maxFiltered.total).toBe(1);
+      expect(maxFiltered.items[0].budgetXLM).toBe('10');
+    });
+
+    it('invalidates every cached budget-filter variant on mutation (#430)', async () => {
+      const redis = makeInMemoryRedis();
+      service = await buildService(redis);
+      await service.search({});
+      await service.search({ minBudgetXLM: '500' });
+      await service.search({ maxBudgetXLM: '50' });
+
+      await service.create({ ...validDto, budgetXLM: '1000' });
+      redis.mget.mockClear();
+
+      await service.search({});
+      await service.search({ minBudgetXLM: '500' });
+      await service.search({ maxBudgetXLM: '50' });
+
+      // Each variant should be a fresh cache miss (findAll -> fetchMany -> mget) after invalidation.
+      expect(redis.mget).toHaveBeenCalledTimes(3);
     });
 
     it('invalidates the cache when a gig is created, so a stale page is never served', async () => {

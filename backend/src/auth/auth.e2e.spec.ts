@@ -1,18 +1,35 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
+import { Keypair } from '@stellar/stellar-sdk';
 import { AuthModule } from './auth.module';
 import { AuthService } from './auth.service';
+import { RedisModule } from '../common/redis/redis.module';
+import { validateEnv } from '../config/env.config';
+
+// AuthModule's JwtModule.registerAsync() reads config.JWT_SECRET at instantiation, which
+// requires validateEnv() to have run first — normally done once in main.ts. This test was
+// never actually collected by Jest before (wrong filename suffix, see #431/#397), so this
+// gap went unnoticed until the rename made it run.
+validateEnv();
 
 describe('Auth (E2E)', () => {
   let app: INestApplication;
   let authService: AuthService;
 
-  const TEST_ADDRESS = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOP';
+  // POST /auth/verify validates `address` against VerifyDto's `/^G[A-Z0-9]{55}$/` (56 chars
+  // total); the previous hardcoded literal here was only 53 chars, so every /auth/verify
+  // request in this file 400'd on DTO validation before ever reaching the mocked service —
+  // invisible until the rename made this suite actually run (see #431/#397).
+  const TEST_ADDRESS = Keypair.random().publicKey();
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AuthModule],
+      // NonceStoreService (used by AuthService) injects REDIS_CLIENT, which RedisModule
+      // provides as a @Global() binding in the real app (imported once at the root). This
+      // standalone test needs it imported explicitly since AuthModule alone doesn't pull
+      // it in. No REDIS_URL is set here, so it resolves to `null` — the in-memory fallback.
+      imports: [AuthModule, RedisModule],
     }).compile();
 
     app = moduleFixture.createNestApplication();

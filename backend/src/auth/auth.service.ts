@@ -32,10 +32,6 @@ export class AuthService {
     }
 
     const nonce = this.extractNonce(challenge);
-    if (nonce && (await this.nonceStore.isNonceReplay(nonce))) {
-      this.logger.warn(`Replay attempt detected for ${this.maskAddress(address)}`);
-      throw new UnauthorizedException('Challenge already used — replay blocked');
-    }
 
     try {
       const signatureBuffer = Buffer.from(signature, 'base64');
@@ -45,7 +41,11 @@ export class AuthService {
       const isValid = keypair.verify(challengeBuffer, signatureBuffer);
 
       if (isValid && nonce) {
-        await this.nonceStore.markNonceUsed(nonce);
+        const firstUse = await this.nonceStore.markNonceUsed(nonce);
+        if (!firstUse) {
+          this.logger.warn(`Replay attempt detected for ${this.maskAddress(address)}`);
+          throw new UnauthorizedException('Challenge already used — replay blocked');
+        }
         this.logger.debug(`Signature verified for ${this.maskAddress(address)}`);
       }
 

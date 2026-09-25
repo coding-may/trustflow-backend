@@ -28,12 +28,15 @@ tests; tests that don't need it check `REDIS_URL` and skip). Steps, in order:
 4. **Lint** — `npm run lint:check` (ESLint)
 5. **Format check** — `npm run format:check` (Prettier)
 6. **TypeScript check** — `npx tsc --noEmit`; blocks the PR on type errors
-7. **Wait for Redis** — polls the service container before trusting `REDIS_URL`
-8. **Unit tests** — `npm run test:ci` (Jest, `--maxWorkers=2`, with `REDIS_URL` set)
-9. **Build** — `npm run build` (`tsc`)
-10. **Dependency vulnerability scan** — `npm audit --audit-level=high`; gates on high/critical
+7. **Circular dependency check** — `npm run check:cycles` (`madge --circular`); catches an
+   injection-token/service import cycle before it ships (Nest resolves those to an `undefined`
+   token at runtime rather than a compile error — see #429)
+8. **Wait for Redis** — polls the service container before trusting `REDIS_URL`
+9. **Unit tests** — `npm run test:ci` (Jest, `--maxWorkers=2`, with `REDIS_URL` set)
+10. **Build** — `npm run build` (`tsc`)
+11. **Dependency vulnerability scan** — `npm audit --audit-level=high`; gates on high/critical
     findings only
-11. **Upload coverage** — sends `backend/coverage` to Codecov (`fail_ci_if_error: false`, so a
+12. **Upload coverage** — sends `backend/coverage` to Codecov (`fail_ci_if_error: false`, so a
     Codecov outage never blocks the PR)
 
 #### Timeout

@@ -45,7 +45,25 @@ describe('NonceStoreService', () => {
           60,
           'NX',
         );
-        expect(mockRedis.set).toHaveBeenCalledWith(`auth:nonce:used:${TEST_NONCE}`, '1', 'EX', 300);
+      });
+
+      // #431: store() must never mark the nonce used — that happens only after a
+      // successful signature check (AuthService.verifySignature -> markNonceUsed()).
+      // Marking it here made every login fail as an immediate replay.
+      it('should not mark the nonce as used', async () => {
+        mockRedis.set.mockResolvedValue('OK');
+
+        await service.store(TEST_ADDRESS, TEST_CHALLENGE, TEST_NONCE);
+
+        expect(mockRedis.set).not.toHaveBeenCalledWith(
+          `auth:nonce:used:${TEST_NONCE}`,
+          expect.anything(),
+          expect.anything(),
+          expect.anything(),
+        );
+
+        mockRedis.exists.mockResolvedValue(0);
+        expect(await service.isNonceReplay(TEST_NONCE)).toBe(false);
       });
 
       it('should replace existing challenge if NX fails', async () => {
@@ -53,7 +71,7 @@ describe('NonceStoreService', () => {
 
         await service.store(TEST_ADDRESS, TEST_CHALLENGE, TEST_NONCE);
 
-        expect(mockRedis.set).toHaveBeenCalledTimes(3);
+        expect(mockRedis.set).toHaveBeenCalledTimes(2);
         expect(mockRedis.set).toHaveBeenCalledWith(
           `auth:nonce:${TEST_ADDRESS}`,
           TEST_CHALLENGE,
@@ -127,11 +145,12 @@ describe('NonceStoreService', () => {
     });
 
     describe('markNonceUsed', () => {
-      it('should mark nonce as used in Redis', async () => {
+      it('should mark nonce as used in Redis and report first use', async () => {
         mockRedis.set.mockResolvedValue('OK');
 
-        await service.markNonceUsed(TEST_NONCE);
+        const firstUse = await service.markNonceUsed(TEST_NONCE);
 
+        expect(firstUse).toBe(true);
         expect(mockRedis.set).toHaveBeenCalledWith(
           `auth:nonce:used:${TEST_NONCE}`,
           '1',
@@ -139,6 +158,14 @@ describe('NonceStoreService', () => {
           300,
           'NX',
         );
+      });
+
+      it('should report replay when the nonce is already marked (NX fails)', async () => {
+        mockRedis.set.mockResolvedValue(null);
+
+        const firstUse = await service.markNonceUsed(TEST_NONCE);
+
+        expect(firstUse).toBe(false);
       });
     });
 
@@ -197,6 +224,17 @@ describe('NonceStoreService', () => {
     it('should return false for unknown nonces', async () => {
       const isReplay = await memoryService.isNonceReplay('unknown-nonce');
       expect(isReplay).toBe(false);
+    });
+
+    it('should not mark the nonce used as a side effect of store()', async () => {
+      await memoryService.store(TEST_ADDRESS, TEST_CHALLENGE, TEST_NONCE);
+
+      expect(await memoryService.isNonceReplay(TEST_NONCE)).toBe(false);
+    });
+
+    it('markNonceUsed reports first use, then replay on a second call', async () => {
+      expect(await memoryService.markNonceUsed(TEST_NONCE)).toBe(true);
+      expect(await memoryService.markNonceUsed(TEST_NONCE)).toBe(false);
     });
 
     it('should report active challenge', async () => {
