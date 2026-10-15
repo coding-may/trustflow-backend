@@ -202,11 +202,8 @@ export function buildReplicaPoolConfigs(): PoolConfig[] {
         if (!poolConfig) return null;
 
         const logger = new SanitizedLogger('DatabaseModule');
-        const maxRetries = positiveIntOr(process.env.DB_RETRY_ATTEMPTS, DEFAULT_RETRY_ATTEMPTS);
-        const backoffBase = positiveIntOr(
-          process.env.DB_RETRY_BACKOFF_MS,
-          DEFAULT_RETRY_BACKOFF_BASE_MS,
-        );
+        const maxRetries = config.DB_RETRY_ATTEMPTS;
+        const backoffBase = config.DB_RETRY_BACKOFF_MS;
 
         const pool = await retryWithExponentialBackoff(
           async () => {

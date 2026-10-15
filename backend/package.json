@@ -16,7 +16,11 @@
     "lint:check": "eslint \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
-    "check:cycles": "madge --circular --extensions ts src"
+    "check:cycles": "madge --circular --extensions ts src",
+    "backup:postgres": "bash scripts/backup-postgres.sh",
+    "backup:redis": "bash scripts/backup-redis.sh",
+    "restore:postgres": "bash scripts/restore-postgres.sh",
+    "restore:redis": "bash scripts/restore-redis.sh"
   },
   "dependencies": {
     "@apollo/server": "^4.13.0",

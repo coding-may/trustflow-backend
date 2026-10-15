@@ -3,7 +3,7 @@ import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { MetricsService } from '../monitoring/metrics.service';
-import { MigrationRun } from './migration.types';
+import { MigrationRun, MigrationStatus } from './migration.types';
 import { config } from '../config/env.config';
 
 const RUN_KEY_PREFIX = 'migration:run:';
@@ -68,12 +68,22 @@ export class MigrationStateStore implements OnModuleInit {
 
     if (this.redis) {
       try {
-        const results = await this.redis
+        const multi = this.redis
           .multi()
           .set(this.runKey(run.runId), JSON.stringify(run))
-          .sadd(RUNS_INDEX_KEY, run.runId)
-          .exec();
+          .sadd(RUNS_INDEX_KEY, run.runId);
+
+        // Set TTL for terminal states (COMPLETED, ROLLED_BACK, FAILED)
+        if (this.isTerminalState(run.status)) {
+          const ttlSeconds = config.MIGRATION_RUN_TTL_SECONDS;
+          multi.expire(this.runKey(run.runId), ttlSeconds);
+        }
+
+        const results = await multi.exec();
         this.assertTransactionOk(results);
+
+        // Prune old runs for this migration after saving
+        await this.pruneOldRuns(run.migrationName);
         return;
       } catch (err) {
         this.logFallback('save', err);
@@ -102,9 +112,26 @@ export class MigrationStateStore implements OnModuleInit {
         const ids = await this.redis.smembers(RUNS_INDEX_KEY);
         if (ids.length === 0) return [];
         const raw = await this.redis.mget(...ids.map(id => this.runKey(id)));
-        const runs = raw
-          .filter((r): r is string => r !== null)
-          .map(r => JSON.parse(r) as MigrationRun);
+        
+        // Filter out expired keys and remove stale IDs from index
+        const staleIds: string[] = [];
+        const runs: MigrationRun[] = [];
+        
+        for (let i = 0; i < raw.length; i++) {
+          if (raw[i] === null) {
+            staleIds.push(ids[i]);
+          } else {
+            runs.push(JSON.parse(raw[i]!) as MigrationRun);
+          }
+        }
+
+        // Clean up stale index entries
+        if (staleIds.length > 0) {
+          await this.redis.srem(RUNS_INDEX_KEY, ...staleIds).catch(err => {
+            this.logger.warn(`Failed to remove stale run IDs from index: ${err}`);
+          });
+        }
+
         return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       } catch (err) {
         this.logFallback('findAll', err);
@@ -224,5 +251,47 @@ export class MigrationStateStore implements OnModuleInit {
         '(multi-instance state will diverge until Redis recovers)',
       err instanceof Error ? err.stack : String(err),
     );
+  }
+
+  private isTerminalState(status: MigrationStatus): boolean {
+    return (
+      status === MigrationStatus.COMPLETED ||
+      status === MigrationStatus.ROLLED_BACK ||
+      status === MigrationStatus.FAILED
+    );
+  }
+
+  /**
+   * Prune old runs for a given migration to prevent unbounded growth.
+   * Keeps at most MIGRATION_MAX_RUNS_PER_NAME runs per migration name.
+   */
+  private async pruneOldRuns(migrationName: string): Promise<void> {
+    if (!this.redis) return;
+
+    try {
+      const allRuns = await this.findAll();
+      const runsForMigration = allRuns
+        .filter(run => run.migrationName === migrationName && this.isTerminalState(run.status))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      const maxRuns = config.MIGRATION_MAX_RUNS_PER_NAME;
+      if (runsForMigration.length > maxRuns) {
+        const toDelete = runsForMigration.slice(maxRuns);
+        const pipeline = this.redis.pipeline();
+        
+        for (const run of toDelete) {
+          pipeline.del(this.runKey(run.runId));
+          pipeline.srem(RUNS_INDEX_KEY, run.runId);
+        }
+
+        await pipeline.exec();
+        this.logger.log(
+          `Pruned ${toDelete.length} old run(s) for migration ${migrationName} ` +
+          `(keeping most recent ${maxRuns})`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(`Failed to prune old runs for ${migrationName}: ${err}`);
+    }
   }
 }

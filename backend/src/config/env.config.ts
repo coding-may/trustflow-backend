@@ -155,6 +155,12 @@ const EnvSchema = z
     DB_POOL_MAX: optionalPositiveInt(),
     DB_POOL_IDLE_TIMEOUT_MS: optionalPositiveInt(),
     DB_POOL_CONNECTION_TIMEOUT_MS: optionalPositiveInt(),
+    DB_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(5).describe(
+      'Maximum number of connection retry attempts during pool initialization. Default 5.',
+    ),
+    DB_RETRY_BACKOFF_MS: z.coerce.number().int().positive().default(1000).describe(
+      'Base delay in milliseconds for exponential backoff between connection retries. Default 1000ms.',
+    ),
 
     SWAGGER_ENABLED: optionalBool().describe(
       'Serve Swagger UI and the OpenAPI JSON; defaults to true outside production, false in production',
@@ -226,6 +232,22 @@ const EnvSchema = z
     ESCROW_RECONCILIATION_SWEEP_CONCURRENCY: optionalPositiveInt(),
     ESCROW_RECONCILIATION_SWEEP_INTERVAL_MS: optionalNonnegativeInt(),
     RUN_MIGRATIONS_ON_STARTUP: optionalBool(),
+    MIGRATION_RUN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30 * 24 * 60 * 60)
+      .describe(
+        'TTL (time-to-live) for completed/failed migration run records in Redis. Default 30 days.',
+      ),
+    MIGRATION_MAX_RUNS_PER_NAME: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(50)
+      .describe(
+        'Maximum number of run records to retain per migration name, even within the TTL window. Default 50.',
+      ),
     WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
     WEBHOOK_RELAY_BATCH_SIZE: z.coerce.number().int().positive().default(50),
     WEBHOOK_RELAY_LEASE_MS: z.coerce.number().int().positive().default(30_000),
