@@ -29,6 +29,7 @@ const IN_PROGRESS_STATUSES = new Set<MigrationStatus>([
 export interface RunMigrationOptions {
   batchSize?: number;
   batchDelayMs?: number;
+  dryRun?: boolean;
 }
 
 /**
@@ -62,6 +63,7 @@ export class MigrationRunnerService {
 
     const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     const batchDelayMs = options.batchDelayMs ?? 0;
+    const dryRun = options.dryRun ?? false;
     const now = new Date().toISOString();
 
     const run: MigrationRun = {
@@ -71,9 +73,22 @@ export class MigrationRunnerService {
       status: MigrationStatus.PENDING,
       progress: { totalRows: 0, processedRows: 0, failedRows: 0, batchSize },
       stepHistory: [],
+      dryRun,
       createdAt: now,
       updatedAt: now,
     };
+
+    // Dry-run mode: simulate without making changes
+    if (dryRun) {
+      this.logger.log(`Migration ${name} (${run.runId}) running in DRY-RUN mode`);
+      run.status = MigrationStatus.COMPLETED;
+      run.completedAt = new Date().toISOString();
+      run.progress.totalRows = await migration.countPending();
+      this.logger.log(
+        `[DRY-RUN] Would process ${run.progress.totalRows} rows in ${Math.ceil(run.progress.totalRows / batchSize)} batches`,
+      );
+      return run;
+    }
 
     // Must be this function's first `await` — see claimAndCreate()'s doc comment for why a
     // separate findActiveByName()-then-create() pair would race two overlapping calls.

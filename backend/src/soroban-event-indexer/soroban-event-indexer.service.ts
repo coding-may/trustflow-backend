@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, BeforeApplicationShutdown } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { Redis } from 'ioredis';
@@ -27,11 +27,12 @@ const DEFAULT_EVENT_LIMIT = 50;
 const MAX_EVENT_LIMIT = 200;
 
 @Injectable()
-export class SorobanEventIndexerService implements OnModuleInit, OnModuleDestroy {
+export class SorobanEventIndexerService implements OnModuleInit, OnModuleDestroy, BeforeApplicationShutdown {
   private readonly logger = new SanitizedLogger(SorobanEventIndexerService.name);
   private rpcServer!: SorobanRpc.Server;
   private pollingInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private currentPoll: Promise<IndexedSorobanEvent[]> | null = null;
 
   private readonly POLL_INTERVAL_MS = 10_000;
   private readonly MAX_LEDGER_RANGE = 100;
@@ -55,9 +56,12 @@ export class SorobanEventIndexerService implements OnModuleInit, OnModuleDestroy
 
     const run = async () => {
       try {
-        await this.poll();
+        this.currentPoll = this.poll();
+        await this.currentPoll;
       } catch (err) {
         this.logger.error('Soroban event poll failed', err);
+      } finally {
+        this.currentPoll = null;
       }
     };
 
@@ -259,6 +263,40 @@ export class SorobanEventIndexerService implements OnModuleInit, OnModuleDestroy
       return String(value);
     } catch {
       return String(value);
+    }
+  }
+
+  /**
+   * Gracefully handles shutdown by waiting for the current poll to complete.
+   * Called automatically by NestJS when SIGTERM/SIGINT is received.
+   * Waits up to 15 seconds for the active poll before allowing termination.
+   */
+  async beforeApplicationShutdown(signal?: string): Promise<void> {
+    this.logger.log(`Soroban indexer received shutdown signal: ${signal || 'unknown'}`);
+    
+    // Stop accepting new polls
+    this.stop();
+
+    if (!this.currentPoll) {
+      this.logger.log('Soroban indexer shutdown - no active poll');
+      return;
+    }
+
+    this.logger.log('Soroban indexer waiting for current poll to complete');
+    
+    const shutdownTimeout = 15000; // 15 seconds
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        this.logger.warn('Soroban indexer shutdown timeout reached - current poll may be incomplete');
+        resolve();
+      }, shutdownTimeout);
+    });
+
+    try {
+      await Promise.race([this.currentPoll, timeoutPromise]);
+      this.logger.log('Soroban indexer shutdown complete');
+    } catch (error) {
+      this.logger.error('Error during Soroban indexer shutdown', error);
     }
   }
 }

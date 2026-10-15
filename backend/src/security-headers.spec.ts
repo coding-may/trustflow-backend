@@ -7,6 +7,9 @@ import {
   createSecurityHeadersMiddleware,
   isSwaggerEnabled,
 } from './common/http/docs-security';
+import { SentryModule } from './sentry/sentry.module';
+import { LoggingModule } from './common/logging/logging.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 
 @Controller('health')
 class HealthController {

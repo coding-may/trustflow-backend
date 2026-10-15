@@ -1,4 +1,9 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import {
+  HealthCheckService,
+  HealthIndicatorResult,
+  HealthCheckResult,
+} from '@nestjs/terminus';
 import type { Redis } from 'ioredis';
 import { DatabaseService } from '../common/database/database.service';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
@@ -8,6 +13,7 @@ import { config } from '../config/env.config';
 export interface HealthStatus {
   status: 'ok' | 'degraded' | 'down';
   checks: Record<string, boolean>;
+  details?: HealthCheckResult;
   uptime: number;
 }
 
@@ -18,6 +24,7 @@ export interface LivenessProbe {
 export interface ReadinessProbe {
   status: 'ok' | 'degraded' | 'down';
   checks: Record<string, boolean>;
+  details?: HealthCheckResult;
 }
 
 @Injectable()
@@ -28,6 +35,7 @@ export class HealthService {
     @Optional() private readonly database?: DatabaseService,
     @Optional() @Inject(REDIS_CLIENT) private readonly redis?: Redis | null,
     @Optional() private readonly drainState?: DrainStateService,
+    @Optional() private readonly health?: HealthCheckService,
   ) {}
 
   async liveness(): Promise<LivenessProbe> {
@@ -48,19 +56,23 @@ export class HealthService {
     }
 
     const checks = await this.runAllChecks();
+    const healthDetails = await this.runTerminusHealthChecks();
     const failing = Object.values(checks).filter(v => !v).length;
     return {
       status: failing === 0 ? 'ok' : failing < 2 ? 'degraded' : 'down',
       checks,
+      details: healthDetails,
     };
   }
 
   async check(): Promise<HealthStatus> {
     const checks = await this.runAllChecks();
+    const healthDetails = await this.runTerminusHealthChecks();
     const failing = Object.values(checks).filter(v => !v).length;
     return {
       status: failing === 0 ? 'ok' : failing < 2 ? 'degraded' : 'down',
       checks,
+      details: healthDetails,
       uptime: Date.now() - this.startTime,
     };
   }
@@ -126,5 +138,57 @@ export class HealthService {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Run Terminus-based structured health checks for detailed dependency breakdown.
+   * Provides rich JSON health information for DevOps monitoring and Kubernetes probes.
+   */
+  private async runTerminusHealthChecks(): Promise<HealthCheckResult | undefined> {
+    if (!this.health) return undefined;
+
+    try {
+      return await this.health.check([
+        async (): Promise<HealthIndicatorResult> => this.checkPostgresIndicator(),
+        async (): Promise<HealthIndicatorResult> => this.checkRedisIndicator(),
+        async (): Promise<HealthIndicatorResult> => this.checkSorobanRpcIndicator(),
+      ]);
+    } catch (error) {
+      // Terminus throws on failure — return the error result
+      return error as HealthCheckResult;
+    }
+  }
+
+  /** Postgres health indicator for Terminus */
+  private async checkPostgresIndicator(): Promise<HealthIndicatorResult> {
+    const isHealthy = await this.checkDatabase();
+    return {
+      postgres: {
+        status: isHealthy ? 'up' : 'down',
+        configured: this.database?.isConfigured ?? false,
+      },
+    };
+  }
+
+  /** Redis health indicator for Terminus */
+  private async checkRedisIndicator(): Promise<HealthIndicatorResult> {
+    const isHealthy = await this.checkRedis();
+    return {
+      redis: {
+        status: isHealthy ? 'up' : 'down',
+        configured: !!this.redis,
+      },
+    };
+  }
+
+  /** Soroban RPC node health indicator for Terminus */
+  private async checkSorobanRpcIndicator(): Promise<HealthIndicatorResult> {
+    const isHealthy = await this.checkStellar();
+    return {
+      soroban_rpc: {
+        status: isHealthy ? 'up' : 'down',
+        url: config.STELLAR_HORIZON_URL,
+      },
+    };
   }
 }

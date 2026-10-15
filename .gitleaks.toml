@@ -1,0 +1,100 @@
+# Gitleaks configuration for TrustFlow Backend
+# Detects accidentally committed secrets (Stellar keys, JWT secrets, DB credentials, API tokens)
+
+title = "TrustFlow Secret Scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stellar-secret-key"
+description = "Stellar Secret Key"
+regex = '''S[A-Z2-7]{55}'''
+tags = ["stellar", "secret", "key"]
+
+[[rules]]
+id = "stellar-mnemonic"
+description = "Stellar 12/24-word mnemonic phrase"
+regex = '''(?i)(^|\s)((\w+\s+){11}\w+|(\w+\s+){23}\w+)($|\s)'''
+tags = ["stellar", "mnemonic", "secret"]
+[rules.allowlist]
+regexes = [
+    '''test[\s_-]?mnemonic''',
+    '''example[\s_-]?phrase''',
+    '''sample[\s_-]?words''',
+]
+
+[[rules]]
+id = "jwt-secret-placeholder"
+description = "JWT Secret in production-like format"
+regex = '''(?i)(jwt[_-]?secret|jwt[_-]?key|secret[_-]?key)\s*[=:]\s*["\']?([a-zA-Z0-9+/=]{32,})["\']?'''
+tags = ["jwt", "secret"]
+[rules.allowlist]
+regexes = [
+    '''change-me''',
+    '''test-only''',
+    '''example''',
+    '''your-secret''',
+    '''ENV_SCHEMA''',
+]
+
+[[rules]]
+id = "postgres-connection-string"
+description = "PostgreSQL connection string with embedded credentials"
+regex = '''postgres(?:ql)?://[^:]+:[^@]+@[^/]+/\w+'''
+tags = ["database", "postgres", "credentials"]
+[rules.allowlist]
+regexes = [
+    '''trustflow:trustflow@localhost''',
+    '''user:password@example''',
+    '''DB_USER:DB_PASSWORD''',
+]
+
+[[rules]]
+id = "redis-url-with-password"
+description = "Redis URL with embedded password"
+regex = '''redis://:[^@]+@[^/]+'''
+tags = ["redis", "credentials"]
+
+[[rules]]
+id = "pinata-jwt"
+description = "Pinata API JWT Token"
+regex = '''eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'''
+tags = ["pinata", "jwt", "ipfs"]
+[rules.allowlist]
+regexes = ['''example''', '''test''', '''mock''']
+
+[[rules]]
+id = "arweave-wallet-key"
+description = "Arweave JWK wallet key"
+regex = '''(?s)\{\s*"kty"\s*:\s*"RSA".*?"d"\s*:'''
+tags = ["arweave", "wallet", "jwk"]
+
+[[rules]]
+id = "discord-webhook"
+description = "Discord Webhook URL"
+regex = '''https://discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+'''
+tags = ["discord", "webhook"]
+[rules.allowlist]
+regexes = ['''example\.com''', '''DISCORD_WEBHOOK_URL''']
+
+[[rules]]
+id = "sentry-dsn"
+description = "Sentry DSN with secret key"
+regex = '''https://[a-f0-9]{32}@[^/]+/\d+'''
+tags = ["sentry", "dsn"]
+[rules.allowlist]
+regexes = ['''SENTRY_DSN''']
+
+[allowlist]
+description = "Global allowlist for test fixtures and documentation"
+paths = [
+    '''\.env\.example$''',
+    '''/tests?/fixtures/''',
+    '''/tests?/mocks/''',
+    '''\.spec\.ts$''',
+    '''\.test\.ts$''',
+    '''^docs/''',
+    '''^README\.md$''',
+]
+regexes = ['''(example|test|mock|fixture|sample)''']

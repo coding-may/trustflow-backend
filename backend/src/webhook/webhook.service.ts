@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, BeforeApplicationShutdown } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { redactUrl } from '../common/logging/redaction';
 import * as https from 'https';
@@ -197,9 +197,11 @@ export async function validateWebhookUrl(urlString: string): Promise<void> {
 }
 
 @Injectable()
-export class WebhookService {
+export class WebhookService implements BeforeApplicationShutdown {
   private readonly logger = new SanitizedLogger(WebhookService.name);
   private endpoints = new Map<string, WebhookEndpointConfig>();
+  private inFlightRequests = new Set<Promise<void>>();
+  private isShuttingDown = false;
 
   constructor(
     @Inject(forwardRef(() => OutboxService)) private readonly outboxService: OutboxService,
@@ -234,6 +236,11 @@ export class WebhookService {
   }
 
   async deliver(event: string, data: unknown, dedupKey?: string) {
+    if (this.isShuttingDown) {
+      this.logger.warn('Webhook service is shutting down, rejecting new delivery');
+      return;
+    }
+
     const payload: WebhookPayload = { event, data, timestamp: new Date().toISOString(), dedupKey };
     // Re-validate each endpoint at dispatch time to protect against DNS rebinding
     const validEndpoints: WebhookEndpointConfig[] = [];
@@ -254,11 +261,21 @@ export class WebhookService {
     const promises = validEndpoints.map(endpoint =>
       this.sendWithRetry(endpoint.url, payload, 3, endpoint.secret),
     );
-    const results = await Promise.allSettled(promises);
-    const failed = results.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    );
-    if (failed) throw failed.reason;
+    
+    // Track in-flight webhook requests for graceful shutdown
+    const deliveryPromise = Promise.allSettled(promises).then(results => {
+      const failed = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failed) throw failed.reason;
+    });
+    
+    this.inFlightRequests.add(deliveryPromise);
+    try {
+      await deliveryPromise;
+    } finally {
+      this.inFlightRequests.delete(deliveryPromise);
+    }
   }
 
   private sendWithRetry(
@@ -310,5 +327,42 @@ export class WebhookService {
       req.write(body);
       req.end();
     });
+  }
+
+  /**
+   * Gracefully handles shutdown by waiting for all in-flight webhook deliveries to complete.
+   * Called automatically by NestJS when SIGTERM/SIGINT is received.
+   * Waits up to 15 seconds for pending requests before allowing the process to terminate.
+   */
+  async beforeApplicationShutdown(signal?: string): Promise<void> {
+    this.isShuttingDown = true;
+    const count = this.inFlightRequests.size;
+    
+    if (count === 0) {
+      this.logger.log('Webhook service shutdown - no in-flight requests');
+      return;
+    }
+
+    this.logger.log(`Webhook service shutting down - waiting for ${count} in-flight request(s)`);
+    
+    const shutdownTimeout = 15000; // 15 seconds
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        this.logger.warn(
+          `Webhook shutdown timeout reached - ${this.inFlightRequests.size} request(s) still pending`
+        );
+        resolve();
+      }, shutdownTimeout);
+    });
+
+    try {
+      await Promise.race([
+        Promise.allSettled(Array.from(this.inFlightRequests)),
+        timeoutPromise,
+      ]);
+      this.logger.log('Webhook service shutdown complete');
+    } catch (error) {
+      this.logger.error('Error during webhook service shutdown', error);
+    }
   }
 }

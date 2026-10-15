@@ -52,6 +52,12 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule);
 
+  // Enable shutdown hooks so lifecycle hooks (beforeApplicationShutdown, onApplicationShutdown)
+  // are triggered when the app receives SIGTERM/SIGINT. This ensures BullMQ workers, Redis
+  // subscribers, and the Soroban indexer can complete in-flight operations cleanly during
+  // rolling deployments or pod terminations.
+  app.enableShutdownHooks();
+
   // The whole HTTP-level stack — security headers, body limits, Sentry, the exception
   // filter, request timeouts, metrics, CORS, validation, API versioning, Swagger, and the
   // Soroban indexer — is applied by `configureApp`. This used to be duplicated inline here

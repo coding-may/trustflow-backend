@@ -16,6 +16,7 @@
     "lint:check": "eslint \"src/**/*.ts\"",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
+    "export:openapi": "ts-node scripts/export-openapi.ts",
     "check:cycles": "madge --circular --extensions ts src",
     "backup:postgres": "bash scripts/backup-postgres.sh",
     "backup:redis": "bash scripts/backup-redis.sh",
@@ -31,7 +32,9 @@
     "@nestjs/jwt": "^10.0.0",
     "@nestjs/passport": "^10.0.0",
     "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/schedule": "^4.1.2",
     "@nestjs/swagger": "^7.0.0",
+    "@nestjs/terminus": "^10.3.0",
     "@sentry/node": "^8.55.2",
     "@stellar/stellar-sdk": "^12.0.0",
     "class-transformer": "^0.5.1",
@@ -44,6 +47,7 @@
     "opossum": "^8.1.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "pg": "^8.23.1",
     "redis": "^6.3.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
@@ -51,13 +55,13 @@
   },
   "optionalDependencies": {
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.50.0",
     "@opentelemetry/core": "^1.26.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.53.0",
     "@opentelemetry/resources": "^1.26.0",
     "@opentelemetry/sdk-node": "^0.53.0",
     "@opentelemetry/sdk-trace-base": "^1.26.0",
-    "@opentelemetry/semantic-conventions": "^1.27.0",
-    "@opentelemetry/auto-instrumentations-node": "^0.50.0"
+    "@opentelemetry/semantic-conventions": "^1.27.0"
   },
   "overrides": {
     "axios": "^1.20.0",

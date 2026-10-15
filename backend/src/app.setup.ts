@@ -90,9 +90,9 @@ export function configureApp(app: INestApplication, options: ConfigureAppOptions
   const nodeEnv = config.NODE_ENV;
 
   // Validate CORS configuration in production
-  if (nodeEnv === 'production' && (!corsOrigin || corsOrigin.includes('*'))) {
+  if (nodeEnv === 'production' && (!corsOrigin || corsOrigin.length === 0 || corsOrigin.includes('*'))) {
     logger.error(
-      'CORS_ORIGIN must be explicitly set in production (cannot use wildcard with credentials: true)',
+      'CORS_ORIGIN must be explicitly set to allowed origins in production (cannot use wildcard with credentials: true)',
     );
     process.exit(1);
   }

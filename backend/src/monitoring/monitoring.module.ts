@@ -1,4 +1,5 @@
 import { Module, Global } from '@nestjs/common';
+import { TerminusModule } from '@nestjs/terminus';
 import { HealthService } from './health.service';
 import { MetricsService } from './metrics.service';
 import { HealthController } from './health.controller';
@@ -8,10 +9,11 @@ import { DatabaseModule } from '../common/database/database.module';
 import { SorobanMetricsService } from './soroban-metrics.service';
 import { SorobanRpcMetricsInterceptor } from './soroban-rpc-metrics.interceptor';
 import { TracingService } from './tracing.service';
+import { DatabaseQueryLoggerService } from './database-query-logger.service';
 
 @Global()
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, TerminusModule],
   controllers: [HealthController],
   providers: [
     HealthService,
@@ -21,6 +23,7 @@ import { TracingService } from './tracing.service';
     SorobanMetricsService,
     SorobanRpcMetricsInterceptor,
     TracingService,
+    DatabaseQueryLoggerService,
   ],
   exports: [
     HealthService,
@@ -30,6 +33,7 @@ import { TracingService } from './tracing.service';
     SorobanMetricsService,
     SorobanRpcMetricsInterceptor,
     TracingService,
+    DatabaseQueryLoggerService,
   ],
 })
 export class MonitoringModule {}

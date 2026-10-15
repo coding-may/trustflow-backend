@@ -43,6 +43,7 @@ export interface MigrationRun {
   currentPhase?: MigrationPhase;
   progress: BackfillProgress;
   stepHistory: MigrationStepRecord[];
+  dryRun?: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;

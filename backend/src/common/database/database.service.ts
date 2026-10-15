@@ -5,6 +5,7 @@ import { Pool, QueryResult, QueryResultRow } from 'pg';
 import { PG_POOL, PG_READ_POOLS } from './database.constants';
 
 import { MetricsService } from '../../monitoring/metrics.service';
+import { DatabaseQueryLoggerService } from '../../monitoring/database-query-logger.service';
 
 /**
  * Thin wrapper around the Core DB connection pool. Every query goes through here rather
@@ -34,6 +35,7 @@ export class DatabaseService implements OnModuleDestroy {
     @Inject(PG_POOL) private readonly pool: Pool | null,
     @Optional() @Inject(PG_READ_POOLS) private readonly readPools: Pool[] | null,
     @Optional() private readonly metrics?: MetricsService,
+    @Optional() private readonly queryLogger?: DatabaseQueryLoggerService,
   ) {}
 
   get isConfigured(): boolean {
@@ -113,7 +115,11 @@ export class DatabaseService implements OnModuleDestroy {
         this.metrics.increment('db_query_count');
       }
 
-      if (duration > this.slowQueryThresholdMs) {
+      // Use dedicated query logger for slow query detection and metrics
+      if (this.queryLogger) {
+        this.queryLogger.logQuery(text, duration, poolLabel);
+      } else if (duration > this.slowQueryThresholdMs) {
+        // Fallback to old behavior if query logger not available
         this.logger.warn(
           `Slow query [${poolLabel}] detected: ${duration.toFixed(2)}ms\nQuery: ${this.describeQuery(text)}`,
         );
