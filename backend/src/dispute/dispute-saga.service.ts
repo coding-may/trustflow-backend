@@ -634,22 +634,13 @@ export class DisputeSagaService implements OnModuleInit {
         saga.votes = [...(saga.votes ?? []), vote];
         this.touch(saga);
 
-        await this.webhookService.dispatch(SAGA_EVENTS.VOTE_CAST, {
-          sagaId,
-          jurorAddress: dto.jurorAddress,
-          votesIn: saga.votes.length,
-          votesNeeded: saga.assignedJurors.length,
-        });
-
         // All jurors have voted — compute verdict (exactly once)
+        let verdictReached: DisputeVerdict | undefined;
         if (saga.votes.length === saga.assignedJurors.length && !saga.verdict) {
-          const verdict = this.computeVerdict(saga.votes);
-          saga.verdict = verdict;
+          verdictReached = this.computeVerdict(saga.votes);
+          saga.verdict = verdictReached;
           this.recordStepComplete(saga, DisputeStep.VOTING);
           saga.currentStep = DisputeStep.PAYOUT;
-
-          await this.webhookService.dispatch(SAGA_EVENTS.VERDICT_REACHED, { sagaId, verdict });
-          this.logger.log(`Saga ${sagaId}: verdict reached — ${verdict}`);
 
           const escrow = await this.escrowService.findById(saga.escrowId);
           if (escrow) {
@@ -657,7 +648,7 @@ export class DisputeSagaService implements OnModuleInit {
             // await this.notificationService.notifyVerdictReached({
             //   disputeId: sagaId,
             //   escrowId: saga.escrowId,
-            //   verdict,
+            //   verdict: verdictReached,
             //   depositor: escrow.depositor,
             //   beneficiary: escrow.beneficiary,
             // });
@@ -665,6 +656,25 @@ export class DisputeSagaService implements OnModuleInit {
         }
 
         await this.persistSaga(saga);
+
+        // Webhooks are dispatched only after the saga's new state has been
+        // durably persisted (#985) — otherwise a subscriber that reacts to
+        // VOTE_CAST/VERDICT_REACHED by immediately re-reading the saga can
+        // observe the pre-vote state.
+        await this.webhookService.dispatch(SAGA_EVENTS.VOTE_CAST, {
+          sagaId,
+          jurorAddress: dto.jurorAddress,
+          votesIn: saga.votes.length,
+          votesNeeded: saga.assignedJurors.length,
+        });
+        if (verdictReached) {
+          await this.webhookService.dispatch(SAGA_EVENTS.VERDICT_REACHED, {
+            sagaId,
+            verdict: verdictReached,
+          });
+          this.logger.log(`Saga ${sagaId}: verdict reached — ${verdictReached}`);
+        }
+
         return saga;
       } catch (error) {
         await this.compensateVoting(saga, dto.jurorAddress, error);

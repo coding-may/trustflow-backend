@@ -543,6 +543,54 @@ describe('DisputeSagaService', () => {
         service.castVote(sagaId, { jurorAddress: JURORS[0], vote: 'beneficiary' }),
       ).rejects.toThrow(ConflictException);
     });
+
+    it('dispatches vote_cast webhook', async () => {
+      await service.castVote(sagaId, { jurorAddress: JURORS[0], vote: 'depositor' });
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        'dispute.vote_cast',
+        expect.objectContaining({ sagaId, jurorAddress: JURORS[0] }),
+      );
+    });
+
+    it('dispatches verdict_reached webhook once the final vote is cast', async () => {
+      await service.castVote(sagaId, { jurorAddress: JURORS[0], vote: 'depositor' });
+      await service.castVote(sagaId, { jurorAddress: JURORS[1], vote: 'depositor' });
+      expect(webhookService.dispatch).not.toHaveBeenCalledWith(
+        'dispute.verdict_reached',
+        expect.anything(),
+      );
+
+      await service.castVote(sagaId, { jurorAddress: JURORS[2], vote: 'beneficiary' });
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        'dispute.verdict_reached',
+        expect.objectContaining({ sagaId, verdict: DisputeVerdict.DEPOSITOR_WINS }),
+      );
+    });
+
+    it('dispatches vote_cast and verdict_reached only after the saga has been persisted (#985)', async () => {
+      const persist = jest.spyOn(service as unknown as SagaPersistence, 'persistSaga');
+
+      await service.castVote(sagaId, { jurorAddress: JURORS[0], vote: 'depositor' });
+      await service.castVote(sagaId, { jurorAddress: JURORS[1], vote: 'depositor' });
+      await service.castVote(sagaId, { jurorAddress: JURORS[2], vote: 'beneficiary' });
+
+      const persistOrders = persist.mock.invocationCallOrder;
+      const lastPersistOrder = persistOrders[persistOrders.length - 1];
+      const dispatchedEvents: string[] = webhookService.dispatch.mock.calls.map(
+        (call: unknown[]) => call[0] as string,
+      );
+      const voteCastCall = dispatchedEvents.indexOf('dispute.vote_cast');
+      const verdictCall = dispatchedEvents.indexOf('dispute.verdict_reached');
+      expect(voteCastCall).toBeGreaterThanOrEqual(0);
+      expect(verdictCall).toBeGreaterThanOrEqual(0);
+
+      // Every dispatch() call order for this final vote's webhooks must come after
+      // the last persistSaga() call order — i.e. the webhook never fires before commit.
+      const dispatchOrdersForFinalVote = webhookService.dispatch.mock.invocationCallOrder.slice(-2);
+      for (const order of dispatchOrdersForFinalVote) {
+        expect(order).toBeGreaterThan(lastPersistOrder);
+      }
+    });
   });
 
   // ─── executePayout ────────────────────────────────────────────────
