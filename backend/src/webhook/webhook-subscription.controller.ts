@@ -176,7 +176,10 @@ export class WebhookSubscriptionController {
     description:
       'Partially update a subscription. All fields are optional but at least one ' +
       'must be provided — omit any field to leave it unchanged. To rotate the ' +
-      'secret, supply a new `secret` value (≥16 chars).',
+      'secret, supply a new `secret` value (≥16 chars). The previous secret remains ' +
+      'accepted for a grace period (deliveries are dual-signed with both secrets, each ' +
+      'as its own `v1=` entry under a shared `t=` in `X-TrustFlow-Signature`) so in-flight ' +
+      'or retrying deliveries are not rejected before you finish migrating your verifier.',
   })
   @ApiParam({ name: 'id', description: 'Subscription UUID' })
   @ApiBody({
@@ -266,7 +269,8 @@ export class WebhookSubscriptionController {
     description:
       'Sends a test POST to the subscription endpoint and reports whether it responded ' +
       'within 5 seconds. The payload `{ type: "ping", timestamp, subscriptionId }` is ' +
-      'signed with the `X-TrustFlow-Signature` header when the subscription has a secret.',
+      'signed with the `X-TrustFlow-Signature` header when the subscription has a secret. ' +
+      'During a secret rotation grace period the header carries one `v1=` entry per secret.',
   })
   @ApiParam({ name: 'id', description: 'Subscription UUID' })
   @ApiOkResponse({
@@ -313,6 +317,9 @@ export class WebhookSubscriptionController {
       url: sub.url,
       topics: [...sub.topics],
       ...(sub.secret ? { secret: maskSecret(sub.secret) } : {}),
+      ...(sub.previousSecretExpiresAt && sub.previousSecretExpiresAt.getTime() > Date.now()
+        ? { secretRotationGraceUntil: sub.previousSecretExpiresAt.toISOString() }
+        : {}),
       createdAt: sub.createdAt.toISOString(),
       updatedAt: sub.updatedAt.toISOString(),
     };

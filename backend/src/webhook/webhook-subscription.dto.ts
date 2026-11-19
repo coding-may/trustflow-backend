@@ -50,6 +50,7 @@ export const WebhookSubscriptionResponseSchema = z.object({
   url: z.string(),
   topics: z.array(z.string()),
   secret: z.string().optional(),
+  secretRotationGraceUntil: z.string().datetime().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -91,6 +92,13 @@ export class WebhookSubscriptionResponseDto {
     description: 'Signing secret, masked (first 4 characters only)',
   })
   secret?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Present only right after a secret rotation: the previous secret is still accepted ' +
+      '(dual-signed alongside the new one) until this timestamp (ISO-8601), then fully retired.',
+  })
+  secretRotationGraceUntil?: string;
 
   @ApiProperty({ description: 'Creation timestamp (ISO-8601)' })
   createdAt!: string;

@@ -317,6 +317,15 @@ const EnvSchema = z
     WEBHOOK_RELAY_BATCH_SIZE: z.coerce.number().int().positive().default(50),
     WEBHOOK_RELAY_LEASE_MS: z.coerce.number().int().positive().default(30_000),
     WEBHOOK_PROCESSOR_CONCURRENCY: z.coerce.number().int().positive().default(10),
+    WEBHOOK_SECRET_ROTATION_GRACE_MS: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(24 * 60 * 60 * 1000)
+      .describe(
+        "How long a webhook subscription's previous signing secret stays accepted " +
+          '(dual-signed alongside the new one) after a secret rotation (#984). Default 24 hours.',
+      ),
     OUTBOX_RELAY_INTERVAL_MS: z.coerce.number().int().nonnegative().default(1000),
     OUTBOX_RELAY_BATCH_SIZE: z.coerce.number().int().positive().default(100),
     OUTBOX_RELAY_LEASE_MS: z.coerce.number().int().positive().default(30_000),

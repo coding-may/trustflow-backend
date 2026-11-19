@@ -4,6 +4,7 @@ import * as https from 'https';
 import { v4 as uuidv4 } from 'uuid';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { computeWebhookSignature, validateWebhookUrl } from './webhook.service';
+import { config } from '../config/env.config';
 import {
   CreateWebhookSubscriptionSchema,
   UpdateWebhookSubscriptionSchema,
@@ -21,6 +22,16 @@ export interface WebhookSubscription {
   topics: string[];
   /** HMAC-SHA256 secret used to sign outbound payloads. Never exposed in API responses. */
   secret?: string;
+  /**
+   * Secret that was replaced by `secret` in the most recent rotation (#984).
+   * Kept around, and dual-signed alongside the new secret, until
+   * `previousSecretExpiresAt` passes — so deliveries in flight when the
+   * rotation happened don't fail verification before the subscriber has
+   * migrated to the new secret.
+   */
+  previousSecret?: string;
+  /** When `previousSecret` stops being accepted and is fully retired. */
+  previousSecretExpiresAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -98,16 +109,34 @@ export class WebhookSubscriptionService {
     }
     if (data.url !== undefined) await validateWebhookUrl(data.url);
 
+    // A rotation is a *change* of an existing secret, not its first set — a brand new
+    // subscription (or one that had no secret yet) has nothing worth a grace period for (#984).
+    const isRotation =
+      data.secret !== undefined && existing.secret !== undefined && data.secret !== existing.secret;
+
     const updated: WebhookSubscription = {
       ...existing,
       ...(data.dappId !== undefined ? { dappId: data.dappId } : {}),
       ...(data.url !== undefined ? { url: data.url } : {}),
       ...(data.topics !== undefined ? { topics: data.topics } : {}),
       ...(data.secret !== undefined ? { secret: data.secret } : {}),
+      ...(isRotation
+        ? {
+            previousSecret: existing.secret,
+            previousSecretExpiresAt: new Date(Date.now() + config.WEBHOOK_SECRET_ROTATION_GRACE_MS),
+          }
+        : {}),
       updatedAt: new Date(),
     };
     this.subscriptions.set(id, updated);
-    this.logger.log(`Updated webhook subscription ${id}`);
+    if (isRotation) {
+      this.logger.log(
+        `Rotated signing secret for webhook subscription ${id}; previous secret still accepted ` +
+          `until ${updated.previousSecretExpiresAt!.toISOString()}`,
+      );
+    } else {
+      this.logger.log(`Updated webhook subscription ${id}`);
+    }
     return updated;
   }
 
@@ -147,7 +176,12 @@ export class WebhookSubscriptionService {
 
     const startedAt = Date.now();
     try {
-      const statusCode = await this.post(subscription.url, payload, subscription.secret);
+      const statusCode = await this.post(
+        subscription.url,
+        payload,
+        subscription.secret,
+        this.activePreviousSecret(subscription),
+      );
       return {
         reachable: statusCode >= 200 && statusCode < 300,
         responseTimeMs: Date.now() - startedAt,
@@ -162,10 +196,39 @@ export class WebhookSubscriptionService {
   }
 
   /**
+   * Returns `previousSecret` only while it is still within its rotation grace
+   * period; once `previousSecretExpiresAt` has passed it is fully retired —
+   * cleared from the record so it is never considered again (#984).
+   */
+  private activePreviousSecret(subscription: WebhookSubscription): string | undefined {
+    if (!subscription.previousSecret || !subscription.previousSecretExpiresAt) {
+      return undefined;
+    }
+    if (subscription.previousSecretExpiresAt.getTime() <= Date.now()) {
+      const retired: WebhookSubscription = { ...subscription };
+      delete retired.previousSecret;
+      delete retired.previousSecretExpiresAt;
+      this.subscriptions.set(subscription.id, retired);
+      return undefined;
+    }
+    return subscription.previousSecret;
+  }
+
+  /**
    * Fire a single POST at the subscription URL and resolve with the response
    * status code. Rejects on transport error or timeout.
+   *
+   * When `previousSecret` is supplied (an active rotation grace period, #984),
+   * the request carries one `v1=` signature per secret under a shared `t=`
+   * timestamp, so a receiver verifying against either the old or the new
+   * secret accepts the delivery.
    */
-  private post(url: string, body: string, secret?: string): Promise<number> {
+  private post(
+    url: string,
+    body: string,
+    secret?: string,
+    previousSecret?: string,
+  ): Promise<number> {
     return new Promise((resolve, reject) => {
       const transport = url.startsWith('https') ? https : http;
       const headers: Record<string, string | number> = {
@@ -173,7 +236,9 @@ export class WebhookSubscriptionService {
         'Content-Length': Buffer.byteLength(body, 'utf8'),
       };
       if (secret) {
-        headers['X-TrustFlow-Signature'] = computeWebhookSignature(body, secret);
+        headers['X-TrustFlow-Signature'] = previousSecret
+          ? this.dualSign(body, secret, previousSecret)
+          : computeWebhookSignature(body, secret);
       }
 
       const req = transport.request(
@@ -191,5 +256,19 @@ export class WebhookSubscriptionService {
       req.write(body);
       req.end();
     });
+  }
+
+  /**
+   * Builds an `X-TrustFlow-Signature` header carrying one `v1=` signature per
+   * secret, all computed over the same shared timestamp so a receiver can
+   * verify against whichever of the two secrets it currently holds (#984):
+   *
+   *   t=<ms>,v1=<hmac_with_new_secret>,v1=<hmac_with_previous_secret>
+   */
+  private dualSign(body: string, secret: string, previousSecret: string): string {
+    const timestampMs = Date.now();
+    const current = computeWebhookSignature(body, secret, timestampMs);
+    const previousHex = computeWebhookSignature(body, previousSecret, timestampMs).split('v1=')[1];
+    return `${current},v1=${previousHex}`;
   }
 }
