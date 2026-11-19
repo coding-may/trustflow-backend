@@ -14,10 +14,19 @@ import { config } from '../config/env.config';
 /** Base backoff between webhook delivery attempts; grows linearly per attempt. */
 const WEBHOOK_RETRY_BASE_DELAY_MS = 1000;
 
+/**
+ * Current payload schema version (#983). Bump this whenever a breaking change
+ * is made to the payload shape for any event, and keep delivering the previous
+ * shape to subscribers who have not yet migrated.
+ */
+export const CURRENT_WEBHOOK_SCHEMA_VERSION = 1;
+
 interface WebhookPayload {
   event: string;
   data: unknown;
   timestamp: string;
+  /** Payload schema version, so subscribers can detect and handle future shape changes. */
+  schemaVersion: number;
   /** Stable key consumers use to collapse retries from the transactional outbox. */
   dedupKey?: string;
 }
@@ -241,7 +250,13 @@ export class WebhookService implements BeforeApplicationShutdown {
       return;
     }
 
-    const payload: WebhookPayload = { event, data, timestamp: new Date().toISOString(), dedupKey };
+    const payload: WebhookPayload = {
+      event,
+      data,
+      timestamp: new Date().toISOString(),
+      schemaVersion: CURRENT_WEBHOOK_SCHEMA_VERSION,
+      dedupKey,
+    };
     // Re-validate each endpoint at dispatch time to protect against DNS rebinding
     const validEndpoints: WebhookEndpointConfig[] = [];
     for (const endpoint of this.endpoints.values()) {

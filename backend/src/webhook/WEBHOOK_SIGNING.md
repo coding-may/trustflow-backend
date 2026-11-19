@@ -36,6 +36,26 @@ re-sent payloads even when the attacker has the raw bytes.
 
 ---
 
+## Payload schema version
+
+Every webhook body carries a `schemaVersion` integer:
+
+```json
+{
+  "event": "dispute.raised",
+  "data": { "...": "..." },
+  "timestamp": "2026-11-19T00:00:00.000Z",
+  "schemaVersion": 1
+}
+```
+
+Existing subscribers can rely on `schemaVersion: 1` meaning "the shape documented today."
+If a future change to an event's payload would break existing consumers, the version for
+that event is bumped and announced — check `schemaVersion` before assuming a field's
+presence, type, or meaning, rather than keying off the payload shape alone.
+
+---
+
 ## Signing secret
 
 A unique 64-character hex secret (32 random bytes) is generated for every endpoint
