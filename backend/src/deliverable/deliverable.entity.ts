@@ -2,6 +2,8 @@ export enum DeliverableStatus {
   PENDING = 'pending',
   PINNED = 'pinned',
   FAILED = 'failed',
+  APPROVED = 'approved',
+  REJECTED = 'rejected',
 }
 
 export interface Deliverable {

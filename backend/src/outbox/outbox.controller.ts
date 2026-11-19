@@ -78,4 +78,17 @@ export class OutboxController {
   async replayAll() {
     return this.outboxService.replayAll();
   }
+
+  @Post('admin/outbox/cleanup')
+  @ApiOperation({
+    summary: 'Purge delivered outbox messages past their retention window',
+    description:
+      'Removes delivered events whose deliveredAt is older than the configured retention ' +
+      '(measured from delivery time, not creation time). Returns the number purged.',
+  })
+  @ApiResponse({ status: 200, description: 'Number of events purged' })
+  async cleanup() {
+    const purged = await this.outboxService.purgeDeliveredOutboxMessages();
+    return { purged };
+  }
 }

@@ -98,15 +98,41 @@ describe('DeliverableService', () => {
       expect(found.cid).toBe('bafytest456');
     });
 
-    it('returns deliverables filtered by gig ID', async () => {
+    it('returns deliverables filtered by gig ID with pagination', async () => {
       mockIpfsPinningService.pinContent.mockResolvedValue({ cid: 'c1', size: 1 });
 
       await service.upload({ ...dto, gigId: 'gig-1' }, FREELANCER);
       await service.upload({ ...dto, gigId: 'gig-2' }, FREELANCER);
       const gig1Deliverables = await service.findByGig('gig-1');
 
-      expect(gig1Deliverables).toHaveLength(1);
-      expect(gig1Deliverables[0].gigId).toBe('gig-1');
+      expect(gig1Deliverables.items).toHaveLength(1);
+      expect(gig1Deliverables.items[0].gigId).toBe('gig-1');
+      expect(gig1Deliverables.total).toBe(1);
+      expect(gig1Deliverables.page).toBe(1);
+      expect(gig1Deliverables.limit).toBe(20);
+    });
+
+    it('paginates deliverables when page and limit are specified', async () => {
+      mockIpfsPinningService.pinContent.mockResolvedValue({ cid: 'c1', size: 1 });
+
+      for (let i = 1; i <= 5; i++) {
+        await service.upload({ ...dto, gigId: 'gig-paginated', filename: `report-${i}.pdf` }, FREELANCER);
+      }
+
+      const page1 = await service.findByGig('gig-paginated', { page: 1, limit: 2 });
+      expect(page1.items).toHaveLength(2);
+      expect(page1.total).toBe(5);
+      expect(page1.page).toBe(1);
+
+      const page2 = await service.findByGig('gig-paginated', { page: 2, limit: 2 });
+      expect(page2.items).toHaveLength(2);
+      expect(page2.total).toBe(5);
+      expect(page2.page).toBe(2);
+
+      const page3 = await service.findByGig('gig-paginated', { page: 3, limit: 2 });
+      expect(page3.items).toHaveLength(1);
+      expect(page3.total).toBe(5);
+      expect(page3.page).toBe(3);
     });
 
     describe('authorization and gig verification', () => {
@@ -116,7 +142,9 @@ describe('DeliverableService', () => {
       ) {
         await expect(promise).rejects.toBeInstanceOf(error);
         expect(mockIpfsPinningService.pinContent).not.toHaveBeenCalled();
-        expect(await service.findByGig(dto.gigId)).toEqual([]);
+        const empty = await service.findByGig(dto.gigId);
+        expect(empty.items).toEqual([]);
+        expect(empty.total).toBe(0);
       }
 
       it('looks the gig up by the requested gigId', async () => {

@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { rpc as SorobanRpc, xdr } from '@stellar/stellar-sdk';
 import { LedgerCursorService, LedgerCheckpoint } from './ledger-cursor.service';
@@ -7,11 +7,12 @@ import { getStellarConfig } from '../stellar/stellar.config';
 import { mapWithConcurrency } from '../common/concurrency';
 import { config } from '../config/env.config';
 import { buildSorobanServer } from '../stellar/soroban.helper';
+import { IngestionHealthService } from '../monitoring/ingestion-health.service';
 
 @Injectable()
 export class EventIngestionService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new SanitizedLogger(EventIngestionService.name);
-  private rpcServer: SorobanRpc.Server;
+  private rpcServer!: SorobanRpc.Server;
   private pollingInterval: NodeJS.Timeout | null = null;
   private isRunning = false;
   private isIngestingInFlight = false;
@@ -23,6 +24,7 @@ export class EventIngestionService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly ledgerCursorService: LedgerCursorService,
     private readonly eventProcessorService: EventProcessorService,
+    @Optional() private readonly ingestionHealth?: IngestionHealthService,
   ) {}
 
   onModuleInit() {
@@ -327,6 +329,10 @@ export class EventIngestionService implements OnModuleInit, OnModuleDestroy {
   private async getLedgerBounds(): Promise<{ latestLedger: number; oldestLedger: number }> {
     try {
       const response = await this.rpcServer.getHealth();
+      // Reaching here means the RPC node actually answered — the signal `/health`'s
+      // event-ingestion check needs, since a poller stuck retrying a bad endpoint never
+      // gets this far but keeps its process/loop alive (#987).
+      this.ingestionHealth?.recordSuccessfulPoll(this.POLL_INTERVAL_MS);
       if (response && typeof response === 'object') {
         const anyResp = response as any;
         return {

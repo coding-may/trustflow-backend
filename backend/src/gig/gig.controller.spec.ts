@@ -115,6 +115,11 @@ describe('GigController', () => {
       await expect(controller.search({ limit: '500' } as any)).rejects.toThrow();
       expect(mockGigService.search).not.toHaveBeenCalled();
     });
+
+    it('rejects an unrecognized category with 400 validation error', async () => {
+      await expect(controller.search({ category: 'nonexistent' })).rejects.toThrow(BadRequestException);
+      expect(mockGigService.search).not.toHaveBeenCalled();
+    });
   });
 
   describe('findOne', () => {

@@ -18,6 +18,7 @@ export interface OutboxEvent<T = unknown> {
   createdAt: string;
   deliveredAt?: string;
   lastError?: string;
+  correlationId?: string;
 }
 
 /** The subset of Redis MULTI commands used when appending an outbox row. */

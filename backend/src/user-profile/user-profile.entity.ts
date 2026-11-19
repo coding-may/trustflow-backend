@@ -117,4 +117,9 @@ export class UserProfileEntity {
    * Timestamp of last activity
    */
   lastActiveAt?: Date;
+
+  /**
+   * Timestamp when the profile was soft-deleted, or undefined if active
+   */
+  deletedAt?: Date | string;
 }

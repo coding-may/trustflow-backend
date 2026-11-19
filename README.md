@@ -76,6 +76,8 @@ cd backend
 cp ../.env.example .env
 ```
 
+> **Note on .env Precedence (#920)**: `backend/.env` is the primary source of truth for the backend service. If both a root `.env` and `backend/.env` exist, `backend/.env` takes precedence. Pre-existing environment variables already set in your shell/container always take highest precedence over file values.
+
 Key variables:
 
 ```env

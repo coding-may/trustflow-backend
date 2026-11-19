@@ -187,6 +187,10 @@ const EnvSchema = z
     SENTRY_DSN: z
       .preprocess(blankToUndefined, z.string().url().optional())
       .describe('Sentry error tracking DSN; errors are logged but not reported when unset'),
+    SENTRY_TRACES_SAMPLE_RATE: z.preprocess(
+      blankToUndefined,
+      z.coerce.number().min(0).max(1).optional(),
+    ).describe('Sentry traces sample rate (0.0 to 1.0). Defaults to 0.2 in production, 1.0 otherwise (#934).'),
     APP_RELEASE: optionalString(),
 
     // OpenTelemetry Configuration
@@ -442,6 +446,14 @@ const EnvSchema = z
     if (Boolean(data.SWAGGER_USER) !== Boolean(data.SWAGGER_PASSWORD)) {
       issue('SWAGGER_USER', 'SWAGGER_USER and SWAGGER_PASSWORD must be set together');
     }
+
+    // Cross-field sanity check for rate limit abuse detection (#921)
+    if (data.RATE_LIMIT_ABUSE_THRESHOLD > data.RATE_LIMIT_ABUSE_WINDOW_SECONDS * 10) {
+      issue(
+        'RATE_LIMIT_ABUSE_THRESHOLD',
+        `RATE_LIMIT_ABUSE_THRESHOLD (${data.RATE_LIMIT_ABUSE_THRESHOLD}) is unreasonably high for RATE_LIMIT_ABUSE_WINDOW_SECONDS (${data.RATE_LIMIT_ABUSE_WINDOW_SECONDS}s); threshold cannot be realistically reached within the window`,
+      );
+    }
     const swaggerEnabled = data.SWAGGER_ENABLED
       ? data.SWAGGER_ENABLED === 'true'
       : data.NODE_ENV !== 'production';
@@ -468,6 +480,10 @@ const EnvSchema = z
           'CORS_ORIGIN',
           'CORS_ORIGIN must be explicitly set to a comma-separated list of allowed origins in production; wildcard is not allowed',
         );
+      }
+
+      if (!data.SOROBAN_RPC_URL || data.SOROBAN_RPC_URL.trim() === '') {
+        issue('SOROBAN_RPC_URL', 'SOROBAN_RPC_URL is required in production');
       }
     }
 
@@ -506,7 +522,7 @@ const EnvSchema = z
         ? 'https://horizon.stellar.org'
         : 'https://horizon-testnet.stellar.org';
     }
-    if (!data.SOROBAN_RPC_URL) {
+    if (!data.SOROBAN_RPC_URL && !isProduction) {
       data.SOROBAN_RPC_URL = isPublicNetwork
         ? 'https://soroban-mainnet.stellar.org'
         : 'https://soroban-testnet.stellar.org';

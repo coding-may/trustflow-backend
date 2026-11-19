@@ -322,9 +322,9 @@ describe('RateLimitGuard', () => {
       expect(mockRedis.rateLimitCheck).toHaveBeenCalledTimes(2);
       expect(mockRedis.rateLimitCheck).toHaveBeenNthCalledWith(
         2,
-        'ratelimit:{wallet:gabc123:get:_auth_challenge}:bucket',
-        'ratelimit:{wallet:gabc123:get:_auth_challenge}:lockout',
-        'ratelimit:{wallet:gabc123:get:_auth_challenge}:abuse',
+        'ratelimit:{wallet:testnet:gabc123:get:_auth_challenge}:bucket',
+        'ratelimit:{wallet:testnet:gabc123:get:_auth_challenge}:lockout',
+        'ratelimit:{wallet:testnet:gabc123:get:_auth_challenge}:abuse',
         300, // AUTHENTICATED tier (verified wallet present) — see RATE_TIER_CONFIGS
         60_000,
         120_000,
@@ -352,7 +352,7 @@ describe('RateLimitGuard', () => {
       expect(mockRedis.rateLimitCheck).toHaveBeenCalledTimes(2);
       expect(mockRedis.rateLimitCheck).toHaveBeenNthCalledWith(
         2,
-        'ratelimit:{wallet:gabc123:get:_auth_challenge}:bucket',
+        'ratelimit:{wallet:testnet:gabc123:get:_auth_challenge}:bucket',
         expect.any(String),
         expect.any(String),
         300, // AUTHENTICATED tier (verified wallet present) — see RATE_TIER_CONFIGS
@@ -463,6 +463,11 @@ describe('RateLimitGuard', () => {
         ),
       );
       expect(mockRedis.rateLimitCheck).toHaveBeenCalledTimes(1);
+    });
+
+    it('keys wallet rate limits by network so testnet and mainnet do not share a quota (#937)', () => {
+      const keysTestnet = (guard as any).buildKeys('wallet', 'gwallet1', 'get:_auth_challenge');
+      expect(keysTestnet.bucket).toContain('ratelimit:{wallet:testnet:gwallet1:get:_auth_challenge}:bucket');
     });
 
     it('should reject immediately while a lockout key exists', async () => {
@@ -642,6 +647,32 @@ describe('RateLimitGuard', () => {
       }
     });
 
+    it('hardcodes deny for auth routes during Redis outage regardless of global or route setting', async () => {
+      const openGuard = await makeGuard('allow');
+      mockRedis.failExec(new Error('connection lost'));
+
+      const authContext = mockContext({ routePath: '/auth/challenge' }).context;
+      await expect(openGuard.canActivate(authContext)).rejects.toMatchObject({
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+      });
+    });
+
+    it('honors RATE_LIMIT_ON_REDIS_ERROR=deny on non-auth routes during Redis outage', async () => {
+      mockRedis.failExec(new Error('Redis connection refused'));
+      const settings = getConfig() as { RATE_LIMIT_ON_REDIS_ERROR: string };
+      const original = settings.RATE_LIMIT_ON_REDIS_ERROR;
+      settings.RATE_LIMIT_ON_REDIS_ERROR = 'deny';
+      try {
+        const guard = await makeGuard();
+        const escrowContext = mockContext({ routePath: '/escrows' }).context;
+        await expect(guard.canActivate(escrowContext)).rejects.toMatchObject({
+          status: HttpStatus.SERVICE_UNAVAILABLE,
+        });
+      } finally {
+        settings.RATE_LIMIT_ON_REDIS_ERROR = original;
+      }
+    });
+
     it('should log a sustained outage once per interval but count every failure', async () => {
       const openGuard = await makeGuard();
       mockRedis.failExec(new Error('connection lost'));
@@ -759,7 +790,7 @@ describe('RateLimitGuard Supertest integration', () => {
     expect(mockRedis.rateLimitCheck).toHaveBeenCalledTimes(2);
     expect(mockRedis.rateLimitCheck).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining('ratelimit:{wallet:gabc123'),
+      expect.stringContaining('ratelimit:{wallet:testnet:gabc123'),
       expect.any(String),
       expect.any(String),
       300, // AUTHENTICATED tier (verified wallet present) — see RATE_TIER_CONFIGS

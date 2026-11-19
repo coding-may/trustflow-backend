@@ -39,6 +39,23 @@ describe('DeliverableController', () => {
     controller = module.get(DeliverableController);
   });
 
+  describe('review() (#923)', () => {
+    it('passes review payload and authenticated wallet to service', async () => {
+      mockService.review = jest.fn().mockResolvedValue({ id: 'del-1', status: 'approved' });
+      const result = await controller.review('del-1', { status: 'APPROVED' }, makeReq() as any);
+      expect(result).toEqual({ id: 'del-1', status: 'approved' });
+      expect(mockService.review).toHaveBeenCalledWith('del-1', { status: 'APPROVED' }, FREELANCER);
+    });
+
+    it('propagates 409 ConflictException when already finalized', async () => {
+      const { ConflictException } = jest.requireActual('@nestjs/common');
+      mockService.review = jest.fn().mockRejectedValue(new ConflictException('already finalized'));
+      await expect(
+        controller.review('del-1', { status: 'APPROVED' }, makeReq() as any),
+      ).rejects.toThrow(ConflictException);
+    });
+  });
+
   describe('upload()', () => {
     it('passes the validated body and the authenticated wallet to the service', async () => {
       const result = await controller.upload(VALID_BODY, makeReq() as any);
@@ -78,6 +95,43 @@ describe('DeliverableController', () => {
         controller.upload({ ...VALID_BODY, freelancer: 'nope' }, makeReq() as any),
       ).rejects.toThrow(BadRequestException);
       expect(mockService.upload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('findByGig()', () => {
+    it('delegates to the service with gigId and parsed pagination query', async () => {
+      mockService.findByGig.mockResolvedValue({
+        items: [{ id: 'del-1', gigId: 'gig-1' }],
+        total: 1,
+        page: 2,
+        limit: 10,
+      });
+
+      const result = await controller.findByGig('gig-1', 2, 10);
+
+      expect(mockService.findByGig).toHaveBeenCalledWith('gig-1', { page: 2, limit: 10 });
+      expect(result).toEqual({
+        items: [{ id: 'del-1', gigId: 'gig-1' }],
+        total: 1,
+        page: 2,
+        limit: 10,
+      });
+    });
+
+    it('handles undefined pagination parameters with default query shape', async () => {
+      mockService.findByGig.mockResolvedValue({
+        items: [],
+        total: 0,
+        page: 1,
+        limit: 20,
+      });
+
+      await controller.findByGig('gig-1');
+
+      expect(mockService.findByGig).toHaveBeenCalledWith('gig-1', {
+        page: undefined,
+        limit: undefined,
+      });
     });
   });
 });

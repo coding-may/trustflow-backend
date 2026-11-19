@@ -1,4 +1,12 @@
-import { Account, Keypair, Transaction } from '@stellar/stellar-sdk';
+import {
+  Account,
+  BASE_FEE,
+  Keypair,
+  SorobanDataBuilder,
+  Transaction,
+  rpc as SorobanRpc,
+  xdr,
+} from '@stellar/stellar-sdk';
 import { EscrowReleaseTransactionBuilderService } from './escrow-release-transaction-builder.service';
 import { validateEnv } from '../config/env.config';
 import { getStellarConfig } from '../stellar/stellar.config';
@@ -11,8 +19,22 @@ const TEST_CONTRACT_ID = 'CBNXX7I4MGHZO3YAKXJIJNR5TTNSP6R2JAXMA44FS47JSTYAW7LIR4
 function makeRpcServer() {
   return {
     getAccount: jest.fn(),
+    simulateTransaction: jest.fn(),
     prepareTransaction: jest.fn(),
   };
+}
+
+/** A minimal *parsed* simulation response suitable for `assembleTransaction`. */
+function makeSimulation(minResourceFee: string): SorobanRpc.Api.SimulateTransactionResponse {
+  return {
+    _parsed: true,
+    latestLedger: 1,
+    minResourceFee,
+    transactionData: new SorobanDataBuilder(),
+    cost: { cpuInsns: '0', memBytes: '0' },
+    events: [],
+    result: { auth: [], retval: xdr.ScVal.scvVoid() },
+  } as unknown as SorobanRpc.Api.SimulateTransactionResponse;
 }
 
 describe('EscrowReleaseTransactionBuilderService', () => {
@@ -23,8 +45,7 @@ describe('EscrowReleaseTransactionBuilderService', () => {
     beforeEach(() => {
       rpcServer = makeRpcServer();
       service = new EscrowReleaseTransactionBuilderService(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        rpcServer as any,
+        rpcServer as unknown as SorobanRpc.Server,
         { ...getStellarConfig(), contractId: '' },
       );
     });
@@ -48,8 +69,7 @@ describe('EscrowReleaseTransactionBuilderService', () => {
     beforeEach(() => {
       rpcServer = makeRpcServer();
       service = new EscrowReleaseTransactionBuilderService(
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        rpcServer as any,
+        rpcServer as unknown as SorobanRpc.Server,
         { ...getStellarConfig(), contractId: TEST_CONTRACT_ID },
       );
     });
@@ -62,26 +82,62 @@ describe('EscrowReleaseTransactionBuilderService', () => {
       const sourceKeypair = Keypair.random();
       const sourceAccount = new Account(sourceKeypair.publicKey(), '100');
       rpcServer.getAccount.mockResolvedValue(sourceAccount);
-
-      let preparedFrom: Transaction | undefined;
-      rpcServer.prepareTransaction.mockImplementation(async (tx: Transaction) => {
-        preparedFrom = tx;
-        return tx;
-      });
+      rpcServer.simulateTransaction.mockResolvedValue(makeSimulation('1000'));
 
       const result = await service.buildRelease('esc-1', sourceKeypair.publicKey());
 
       expect(rpcServer.getAccount).toHaveBeenCalledWith(sourceKeypair.publicKey());
-      expect(preparedFrom?.operations).toHaveLength(1);
-      expect(preparedFrom?.operations[0].type).toBe('invokeHostFunction');
+      expect(rpcServer.simulateTransaction).toHaveBeenCalledTimes(1);
 
-      expect(result).toEqual({
-        xdr: expect.any(String),
+      const built = new Transaction(result.xdr, getStellarConfig().networkPassphrase);
+      expect(built.operations).toHaveLength(1);
+      expect(built.operations[0].type).toBe('invokeHostFunction');
+
+      const { xdr, ...rest } = result;
+      expect(typeof xdr).toBe('string');
+      expect(rest).toEqual({
         network: getStellarConfig().network,
         networkPassphrase: getStellarConfig().networkPassphrase,
         contractId: TEST_CONTRACT_ID,
         sourceAccount: sourceKeypair.publicKey(),
       });
+    });
+
+    it('uses the simulated minResourceFee plus a 10% margin instead of a flat base fee', async () => {
+      const sourceKeypair = Keypair.random();
+      rpcServer.getAccount.mockResolvedValue(new Account(sourceKeypair.publicKey(), '100'));
+      rpcServer.simulateTransaction.mockResolvedValue(makeSimulation('1000'));
+
+      const result = await service.buildRelease('esc-1', sourceKeypair.publicKey());
+      const built = new Transaction(result.xdr, getStellarConfig().networkPassphrase);
+
+      // 1000 stroops resource fee + 10% margin + 100 stroop classic base fee = 1200.
+      expect(built.fee).toBe((BigInt(BASE_FEE) + 1100n).toString());
+    });
+
+    it('floors the fee at the classic base fee when simulation reports no resource fee', async () => {
+      const sourceKeypair = Keypair.random();
+      rpcServer.getAccount.mockResolvedValue(new Account(sourceKeypair.publicKey(), '100'));
+      rpcServer.simulateTransaction.mockResolvedValue(makeSimulation('0'));
+
+      const result = await service.buildRelease('esc-1', sourceKeypair.publicKey());
+      const built = new Transaction(result.xdr, getStellarConfig().networkPassphrase);
+
+      expect(built.fee).toBe(BASE_FEE);
+    });
+
+    it('propagates simulation errors instead of building an underfunded transaction', async () => {
+      const sourceKeypair = Keypair.random();
+      rpcServer.getAccount.mockResolvedValue(new Account(sourceKeypair.publicKey(), '100'));
+      rpcServer.simulateTransaction.mockResolvedValue({
+        _parsed: true,
+        error: 'HostError: invalid invocation',
+        events: [],
+      });
+
+      await expect(service.buildRelease('esc-1', sourceKeypair.publicKey())).rejects.toThrow(
+        'Release simulation failed for escrow esc-1: HostError: invalid invocation',
+      );
     });
 
     it('propagates RPC errors instead of swallowing them', async () => {

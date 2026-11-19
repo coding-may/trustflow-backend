@@ -16,6 +16,7 @@ import { CreateUserProfileDto, UpdateUserProfileDto, RateUserDto } from './user-
 import { randomUUID } from 'crypto';
 import { config } from '../config/env.config';
 import { parseAmount, normalizeAmount } from '../common/amount';
+import { excludeSoftDeleted } from '../common/database/soft-delete';
 
 export interface UserProfile {
   id: string;
@@ -42,6 +43,7 @@ export interface UserProfile {
   createdAt: string;
   updatedAt: string;
   lastActiveAt?: string;
+  deletedAt?: string;
 }
 
 const PROFILE_KEY_PREFIX = 'profile:';
@@ -172,7 +174,7 @@ export class UserProfileService implements OnModuleInit {
     offset?: number;
     limit?: number;
   }): Promise<{ data: UserProfile[]; total: number }> {
-    let profiles = await this.fetchAll();
+    let profiles = excludeSoftDeleted(await this.fetchAll());
 
     if (filters?.userType) {
       profiles = profiles.filter(
@@ -385,16 +387,20 @@ export class UserProfileService implements OnModuleInit {
   }
 
   private async tryFindById(id: string): Promise<UserProfile | undefined> {
+    let profile: UserProfile | undefined;
     if (this.redis) {
       try {
         const raw = await this.redis.get(this.profileKey(id));
-        return raw ? (JSON.parse(raw) as UserProfile) : undefined;
+        profile = raw ? (JSON.parse(raw) as UserProfile) : undefined;
       } catch (err) {
         this.logFallback('findById', err);
       }
+    } else {
+      profile = this.profiles.get(id);
     }
 
-    return this.profiles.get(id);
+    if (profile?.deletedAt) return undefined;
+    return profile;
   }
 
   private async tryFindByWalletAddress(walletAddress: string): Promise<UserProfile | undefined> {

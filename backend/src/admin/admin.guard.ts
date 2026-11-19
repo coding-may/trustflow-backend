@@ -1,6 +1,7 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { config } from '../config/env.config';
+import { parseAdminAddresses } from './admin-addresses.util';
 
 /**
  * Restricts access to addresses listed in `ADMIN_ADDRESSES` (comma-separated Stellar public
@@ -17,12 +18,7 @@ export class AdminGuard implements CanActivate {
   private readonly adminAddresses: Set<string>;
 
   constructor() {
-    this.adminAddresses = new Set(
-      (config.ADMIN_ADDRESSES ?? '')
-        .split(',')
-        .map((address: string) => address.trim())
-        .filter(Boolean),
-    );
+    this.adminAddresses = parseAdminAddresses(config.ADMIN_ADDRESSES);
 
     if (this.adminAddresses.size === 0) {
       this.logger.warn(

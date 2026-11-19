@@ -345,4 +345,33 @@ describe('GigExpiryWorkerService — concurrency & non-overlap (#236)', () => {
     expect(metrics.increment).toHaveBeenCalledWith('gig_expiry_sweep_gigs_expired_total', {}, 2);
     expect(metrics.increment).toHaveBeenCalledWith('gig_expiry_sweep_gigs_failed_total', {}, 0);
   });
+
+  it('releases reserved funds when an expired gig has linked escrowId', async () => {
+    resetEnvConfig();
+    setTestEnv({ GIG_EXPIRY_SWEEP_CONCURRENCY: '2' });
+    const gigWithEscrow = {
+      ...makeGig('gig-with-escrow', GigStatus.OPEN),
+      escrowId: 'escrow-123',
+    };
+    const gigService: jest.Mocked<Pick<GigService, 'findExpirable' | 'expire'>> = {
+      findExpirable: jest.fn().mockResolvedValue([gigWithEscrow]),
+      expire: jest.fn().mockImplementation(async id => makeGig(id, GigStatus.EXPIRED)),
+    };
+    const mockEscrowService = {
+      cancel: jest.fn().mockResolvedValue({ id: 'escrow-123', status: 'cancelled' }),
+    };
+
+    const worker = new GigExpiryWorkerService(
+      gigService as unknown as GigService,
+      fakeLock() as unknown as DistributedLockService,
+      fakeMetrics(),
+      fakeSentry(),
+      mockEscrowService as any,
+    );
+
+    await worker.runOnce();
+
+    expect(gigService.expire).toHaveBeenCalledWith('gig-with-escrow');
+    expect(mockEscrowService.cancel).toHaveBeenCalledWith('escrow-123');
+  });
 });

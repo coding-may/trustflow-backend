@@ -200,4 +200,33 @@ describe('MigrationRunnerService', () => {
   it('throws NotFoundException for an unknown run id', async () => {
     await expect(runner.findById('mig-unknown')).rejects.toThrow(NotFoundException);
   });
+
+  describe('markApplied', () => {
+    it('creates a completed migration run with mandatory audit note', async () => {
+      const run = await runner.markApplied(fake.name, {
+        reason: 'Applied manually via DB console during outage recovery',
+      });
+
+      expect(run.status).toBe(MigrationStatus.COMPLETED);
+      expect(run.migrationName).toBe(fake.name);
+      expect(run.auditNote).toBe('Applied manually via DB console during outage recovery');
+      expect(run.stepHistory).toHaveLength(3);
+
+      const retrieved = await runner.findById(run.runId);
+      expect(retrieved.status).toBe(MigrationStatus.COMPLETED);
+      expect(retrieved.auditNote).toBe('Applied manually via DB console during outage recovery');
+    });
+
+    it('rejects when audit note is missing or empty', async () => {
+      await expect(
+        runner.markApplied(fake.name, { reason: '   ' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('rejects when migration is not registered', async () => {
+      await expect(
+        runner.markApplied('unregistered-migration', { reason: 'Recovery' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
 });

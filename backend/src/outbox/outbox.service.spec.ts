@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import type { Redis } from 'ioredis';
 import { OutboxService } from './outbox.service';
 import { OutboxEventState, OutboxEventType } from './outbox.entity';
+import type { OutboxEvent } from './outbox.types';
 
 // OutboxService reads config.OUTBOX_MAX_ATTEMPTS via the Proxy, which calls
 // getConfig() / validateEnv() the first time. Ensure the env is valid before tests run.
@@ -178,6 +180,74 @@ describe('OutboxService — core API (in-memory fallback)', () => {
       expect(() =>
         service.sendWebhook(null, 'ipfs.pin.created', { cid: 'abc' }, 'key-1'),
       ).not.toThrow();
+    });
+  });
+
+  describe('purgeDeliveredOutboxMessages (#988)', () => {
+    function deliverWithTimestamps(createdAt: string, deliveredAt: string): string {
+      const event = service.create('t', 'x', 'id-1', {});
+      event.createdAt = createdAt;
+      event.status = 'delivered';
+      event.deliveredAt = deliveredAt;
+      (service as unknown as { memory: Map<string, OutboxEvent> }).memory.set(event.id, event);
+      return event.id;
+    }
+
+    it('purges a delivered event whose deliveredAt is past the retention window', async () => {
+      const now = new Date();
+      const longAgo = new Date(now.getTime() - 40 * 24 * 60 * 60 * 1000).toISOString();
+      const id = deliverWithTimestamps(longAgo, longAgo);
+
+      const purged = await service.purgeDeliveredOutboxMessages(30 * 24 * 60 * 60);
+
+      expect(purged).toBe(1);
+      expect(await service.findById(id)).toBeUndefined();
+    });
+
+    it('keeps a delivered event whose deliveredAt is within the retention window', async () => {
+      const now = new Date();
+      const recently = new Date(now.getTime() - 60 * 1000).toISOString();
+      const id = deliverWithTimestamps(recently, recently);
+
+      const purged = await service.purgeDeliveredOutboxMessages(30 * 24 * 60 * 60);
+
+      expect(purged).toBe(0);
+      expect(await service.findById(id)).toBeDefined();
+    });
+
+    it('keeps a message delivered recently even though it was created long ago (#988)', async () => {
+      // Regression for the exact bug report: a message stuck pending for a long time, which
+      // finally delivered a moment ago, must NOT be purged just because it's old by createdAt.
+      const now = new Date();
+      const longAgo = new Date(now.getTime() - 40 * 24 * 60 * 60 * 1000).toISOString();
+      const justNow = new Date(now.getTime() - 1000).toISOString();
+      const id = deliverWithTimestamps(longAgo, justNow);
+
+      const purged = await service.purgeDeliveredOutboxMessages(30 * 24 * 60 * 60);
+
+      expect(purged).toBe(0);
+      expect(await service.findById(id)).toBeDefined();
+    });
+
+    it('never purges a pending (undelivered) event, regardless of age', async () => {
+      const now = new Date();
+      const longAgo = new Date(now.getTime() - 40 * 24 * 60 * 60 * 1000).toISOString();
+      const event = service.create('t', 'x', 'id-1', {});
+      event.createdAt = longAgo;
+      await service.append(event);
+
+      const purged = await service.purgeDeliveredOutboxMessages(30 * 24 * 60 * 60);
+
+      expect(purged).toBe(0);
+      expect(await service.findById(event.id)).toBeDefined();
+    });
+
+    it('is a no-op when Redis is configured, since markDelivered already sets a delivery-time TTL', async () => {
+      const redisService = new OutboxService({} as unknown as Redis, undefined);
+
+      const purged = await redisService.purgeDeliveredOutboxMessages(30 * 24 * 60 * 60);
+
+      expect(purged).toBe(0);
     });
   });
 });

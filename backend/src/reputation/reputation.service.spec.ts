@@ -365,4 +365,69 @@ describe('ReputationService', () => {
       expect(view.recentEvents.map(e => e.counterparty)).not.toContain('GBEN4');
     });
   });
+
+  describe('getScoreBreakdown (#989)', () => {
+    it('itemizes each event with its base weight, amount weight, and dampening factor', async () => {
+      await service.recordEscrowCompleted(makeEscrow());
+
+      const breakdown = await service.getScoreBreakdown('GDEPOSITOR');
+
+      expect(breakdown.address).toBe('GDEPOSITOR');
+      expect(breakdown.events).toHaveLength(1);
+      expect(breakdown.events[0]).toMatchObject({
+        type: 'escrow_completed',
+        counterparty: 'GBENEFICIARY',
+        baseWeight: REPUTATION_WEIGHTS[ReputationEventType.ESCROW_COMPLETED],
+        dampeningFactor: 1,
+      });
+      expect(breakdown.events[0].amountWeight).toBeGreaterThan(0);
+      expect(breakdown.events[0].amountWeight).toBeLessThanOrEqual(REPUTATION_MAX_AMOUNT_WEIGHT);
+      // baseWeight * amountWeight * dampeningFactor reconstructs the stored contribution.
+      expect(
+        breakdown.events[0].baseWeight *
+          breakdown.events[0].amountWeight *
+          breakdown.events[0].dampeningFactor,
+      ).toBeCloseTo(breakdown.events[0].contribution, 6);
+    });
+
+    it('matches the current score from getScore', async () => {
+      await service.recordEscrowCompleted(makeEscrow());
+
+      const [view, breakdown] = await Promise.all([
+        service.getScore('GDEPOSITOR'),
+        service.getScoreBreakdown('GDEPOSITOR'),
+      ]);
+
+      expect(breakdown.score).toBe(view.score);
+      expect(breakdown.eventCount).toBe(view.eventCount);
+    });
+
+    it("decays a long-past event's contribution toward zero in decayedContribution", async () => {
+      await service.recordEscrowCompleted(makeEscrow());
+
+      // Backdate the event by one half-life, bypassing the service so this test doesn't
+      // depend on mocking Date (new Date() isn't reliably affected by mocking Date.now).
+      const record = (await store.get('GDEPOSITOR'))!;
+      const backdated = new Date(
+        new Date(record.recentEvents[0].occurredAt).getTime() - REPUTATION_DECAY_HALF_LIFE_MS,
+      ).toISOString();
+      record.recentEvents[0].occurredAt = backdated;
+      await store.save(record);
+
+      const breakdown = await service.getScoreBreakdown('GDEPOSITOR');
+
+      // One half-life has elapsed since the event, so its still-counted value should be
+      // roughly half of its original, undecayed contribution.
+      expect(breakdown.events[0].decayedContribution).toBeCloseTo(
+        breakdown.events[0].contribution * 0.5,
+        1,
+      );
+    });
+
+    it('returns an empty breakdown for an address with no history', async () => {
+      const breakdown = await service.getScoreBreakdown('GNEW');
+
+      expect(breakdown).toMatchObject({ address: 'GNEW', score: 0, eventCount: 0, events: [] });
+    });
+  });
 });

@@ -69,4 +69,16 @@ describe('loadDotEnvFile', () => {
 
     expect(result).toBe('');
   }, 20000);
+
+  it('gives precedence to backend/.env when both backend/.env and root .env exist (#920)', () => {
+    const rootEnv = join(dir, '.env');
+    const backendEnv = join(dir, 'backend', '.env');
+    const { mkdirSync, writeFileSync } = require('fs');
+    mkdirSync(join(dir, 'backend'));
+    writeFileSync(rootEnv, 'PORT=1111\n');
+    writeFileSync(backendEnv, 'PORT=2222\n');
+
+    const result = runLoadDotEnvFile(backendEnv);
+    expect(result).toBe('2222');
+  }, 20000);
 });

@@ -1,3 +1,24 @@
+/**
+ * Normalizes error messages and extracts a static fingerprint for Soroban/Stellar errors (#935).
+ * Strips dynamic transaction hashes and sequence numbers so recurring errors group properly in Sentry.
+ */
+export function computeSorobanFingerprint(message: string, errorType?: string): string[] | null {
+  const isSoroban =
+    /soroban|horizon|stellar|transaction\s+[0-9a-fA-F]{64}|tx\s+[0-9a-fA-F]{64}|ledger\s+\d+/i.test(message) ||
+    /soroban|stellar/i.test(errorType ?? '');
+
+  if (!isSoroban) return null;
+
+  // Strip 64-char hex hashes (transaction hashes)
+  let normalized = message.replace(/[0-9a-fA-F]{64}/g, '<tx-hash>');
+  // Strip Stellar account addresses (G... 56 chars)
+  normalized = normalized.replace(/G[A-Z2-7]{55}/g, '<account-id>');
+  // Strip sequence numbers / ledger numbers
+  normalized = normalized.replace(/\b(sequence|ledger|block)\s*[:=]?\s*\d+\b/gi, '$1 <num>');
+
+  return [errorType || 'SorobanError', normalized];
+}
+
 import { Injectable } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import {
@@ -24,11 +45,14 @@ export class SentryService {
       return;
     }
 
+    const tracesSampleRate =
+      config.SENTRY_TRACES_SAMPLE_RATE ?? (isProduction ? 0.2 : 1.0);
+
     Sentry.init({
       dsn,
       environment: config.NODE_ENV,
       release: config.APP_RELEASE,
-      tracesSampleRate: isProduction ? 0.2 : 1.0,
+      tracesSampleRate,
       enabled: !!dsn,
       // The SDK types `beforeSend` against `ErrorEvent`, but `scrubEvent` is declared over the
       // `Event` base because every field it touches lives there. Widening the parameter and
@@ -127,6 +151,19 @@ export function scrubEvent(event: Sentry.Event): Sentry.Event {
   // themselves carry only module/function names, so they need no scrubbing.
   for (const value of scrubbed.exception?.values ?? []) {
     if (typeof value.value === 'string') value.value = redactString(value.value);
+  }
+
+  // #935 — normalize Soroban/Horizon error fingerprinting to avoid splitting by unique tx hash
+  if (!scrubbed.fingerprint) {
+    const rawMsg =
+      scrubbed.message ||
+      scrubbed.exception?.values?.[0]?.value ||
+      '';
+    const errType = scrubbed.exception?.values?.[0]?.type;
+    const customFingerprint = computeSorobanFingerprint(rawMsg, errType);
+    if (customFingerprint) {
+      scrubbed.fingerprint = customFingerprint;
+    }
   }
 
   return scrubbed;

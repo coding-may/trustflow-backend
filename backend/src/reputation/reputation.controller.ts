@@ -1,8 +1,23 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiParam, ApiQuery, ApiResponse } from '@nestjs/swagger';
+import { Controller, ForbiddenException, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiParam,
+  ApiQuery,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { ReputationService } from './reputation.service';
-import { ReputationScoreResponseDto } from './reputation.dto';
+import { ReputationScoreBreakdownResponseDto, ReputationScoreResponseDto } from './reputation.dto';
 import { REPUTATION_LEADERBOARD_DEFAULT_LIMIT } from './reputation.types';
+import { JwtAuthGuard } from '../auth/auth.guard';
+import { isAdminAddress } from '../admin/admin-addresses.util';
+import { config } from '../config/env.config';
+
+/** Shape of `req.user` once `JwtAuthGuard` has run — see `JwtStrategy.validate()`. */
+interface AuthenticatedRequest {
+  user: { address: string; sub: string };
+}
 
 @ApiTags('Reputation')
 @Controller('reputation')
@@ -49,5 +64,27 @@ export class ReputationController {
   @ApiResponse({ status: 200, type: ReputationScoreResponseDto })
   getScore(@Param('address') address: string) {
     return this.reputationService.getScore(address);
+  }
+
+  @Get(':address/breakdown')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: "Itemized breakdown of the events and weights behind an address's score",
+    description:
+      'Lists each contributing event with its base weight, amount scaling, and Sybil dampening, ' +
+      'so a score can be understood or contested instead of needing a direct database query (#989). ' +
+      'Restricted to the address owner or an admin — unlike the plain score, this exposes per-event ' +
+      'counterparty history.',
+  })
+  @ApiParam({ name: 'address', example: 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' })
+  @ApiResponse({ status: 200, type: ReputationScoreBreakdownResponseDto })
+  @ApiResponse({ status: 403, description: 'Caller is neither the address owner nor an admin' })
+  getScoreBreakdown(@Param('address') address: string, @Req() req: AuthenticatedRequest) {
+    const isOwner = req.user.address === address;
+    if (!isOwner && !isAdminAddress(req.user.address, config.ADMIN_ADDRESSES)) {
+      throw new ForbiddenException('Only the address owner or an admin may view this breakdown');
+    }
+    return this.reputationService.getScoreBreakdown(address);
   }
 }

@@ -65,4 +65,37 @@ describe('UploadDeliverableSchema content', () => {
   it('uses the same encoded-length cap as the IPFS pin endpoint', () => {
     expect(MAX_BASE64_CONTENT_LENGTH).toBe(14_316_560);
   });
+
+  describe('fileHash validation (#922)', () => {
+    it('accepts a valid IPFS CIDv0 or CIDv1 in fileHash', () => {
+      const cidV0 = 'QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco';
+      const result = UploadDeliverableSchema.safeParse({
+        gigId: 'gig-1',
+        freelancer: FREELANCER,
+        fileHash: cidV0,
+        filename: 'report.pdf',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects an empty fileHash', () => {
+      const result = UploadDeliverableSchema.safeParse({
+        gigId: 'gig-1',
+        freelancer: FREELANCER,
+        fileHash: '',
+        filename: 'report.pdf',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects placeholder fileHash like "TODO"', () => {
+      const result = UploadDeliverableSchema.safeParse({
+        gigId: 'gig-1',
+        freelancer: FREELANCER,
+        fileHash: 'TODO',
+        filename: 'report.pdf',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });

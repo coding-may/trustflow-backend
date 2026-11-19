@@ -35,7 +35,8 @@ import {
   UpdateGigDto,
   UpdateGigSchema,
 } from './gig.dto';
-import { GigStatus } from './gig.entity';
+import { GigStatus, GigCategory } from './gig.entity';
+import { ZodError } from 'zod';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { Idempotent } from '../common/idempotency';
 
@@ -171,7 +172,15 @@ export class GigController {
     },
   })
   async search(@Query() query: Record<string, string>) {
-    const validated = SearchGigsSchema.parse(query);
+    let validated: SearchGigsQuery;
+    try {
+      validated = SearchGigsSchema.parse(query);
+    } catch (err) {
+      if (err instanceof ZodError) {
+        throw new BadRequestException(err.errors[0]?.message ?? 'Invalid search query parameters');
+      }
+      throw err;
+    }
     return this.gigService.search(validated);
   }
 

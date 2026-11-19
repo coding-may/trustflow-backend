@@ -139,6 +139,78 @@ export class MigrationRunnerService {
     return run;
   }
 
+  /**
+   * Reconciles out-of-band schema changes: marks a migration as COMPLETED in the registry
+   * with a mandatory audit note, preventing conflicting re-runs.
+   */
+  async markApplied(
+    name: string,
+    dto: { reason?: string; justification?: string },
+  ): Promise<MigrationRun> {
+    const auditNote = (dto.reason || dto.justification || '').trim();
+    if (!auditNote) {
+      throw new BadRequestException('A mandatory audit note/justification is required to mark migration as applied');
+    }
+
+    const migration = this.registry.get(name);
+
+    const now = new Date().toISOString();
+    const runId = `mig-${Date.now()}-${randomUUID().slice(0, 8)}`;
+
+    const run: MigrationRun = {
+      runId,
+      migrationName: name,
+      targetTable: migration.targetTable,
+      status: MigrationStatus.COMPLETED,
+      progress: {
+        totalRows: 0,
+        processedRows: 0,
+        failedRows: 0,
+        batchSize: DEFAULT_BATCH_SIZE,
+        startedAt: now,
+        completedAt: now,
+      },
+      stepHistory: [
+        {
+          phase: MigrationPhase.EXPAND,
+          startedAt: now,
+          completedAt: now,
+        },
+        {
+          phase: MigrationPhase.BACKFILL,
+          startedAt: now,
+          completedAt: now,
+        },
+        {
+          phase: MigrationPhase.CONTRACT,
+          startedAt: now,
+          completedAt: now,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+      auditNote,
+    };
+
+    const claim = await this.store.claimAndCreate(run);
+    if (!claim.claimed) {
+      const existing = claim.activeRunId ? await this.store.findById(claim.activeRunId) : undefined;
+      if (existing && IN_PROGRESS_STATUSES.has(existing.status)) {
+        throw new ConflictException(
+          `Migration "${name}" already has an active run (${existing.runId}, status ${existing.status})`,
+        );
+      }
+      await this.store.markActive(name, run.runId);
+      await this.store.create(run);
+    }
+
+    await this.store.save(run);
+    await this.store.clearActive(name);
+    this.logger.log(`Migration "${name}" (${run.runId}) manually marked as applied: ${auditNote}`);
+    return run;
+  }
+
   // ─── Phases ─────────────────────────────────────────────────────────
 
   private async runExpand(migration: SchemaMigration, run: MigrationRun): Promise<void> {

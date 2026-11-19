@@ -7,6 +7,17 @@ export interface NotificationPreference {
   pushEnabled: boolean;
   disputeAlerts: boolean;
   evidenceReminders: boolean;
+  milestoneNotifications?: boolean;
+}
+
+export interface MilestoneNotificationData {
+  gigId: string;
+  gigTitle: string;
+  creator: string;
+  milestoneId: string;
+  status: string;
+  amountXLM?: string;
+  message?: string;
 }
 
 export interface DisputeNotificationData {
@@ -46,6 +57,7 @@ export class NotificationService {
         pushEnabled: true,
         disputeAlerts: true,
         evidenceReminders: true,
+        milestoneNotifications: true,
       }
     );
   }
@@ -97,8 +109,9 @@ export class NotificationService {
     data: DisputeNotificationData,
   ): Promise<boolean> {
     const prefs = this.getPreferences(address);
-    if (!prefs.evidenceReminders) {
-      this.logger.debug(`Evidence reminders disabled for ${address}`);
+    // Short-circuit before expensive body rendering if opted out (#932)
+    if (!prefs.evidenceReminders || (!prefs.emailEnabled && !prefs.pushEnabled)) {
+      this.logger.debug(`Evidence reminders or channels disabled for ${address}; skipping template rendering`);
       return false;
     }
 
@@ -124,8 +137,9 @@ export class NotificationService {
     role: 'depositor' | 'beneficiary',
   ): Promise<boolean> {
     const prefs = this.getPreferences(address);
-    if (!prefs.disputeAlerts) {
-      this.logger.debug(`Dispute alerts disabled for ${address}`);
+    // Short-circuit before expensive body rendering if opted out (#932)
+    if (!prefs.disputeAlerts || (!prefs.emailEnabled && !prefs.pushEnabled)) {
+      this.logger.debug(`Dispute alerts or channels disabled for ${address}; skipping template rendering`);
       return false;
     }
 
@@ -209,6 +223,58 @@ export class NotificationService {
       this.logger.error(`Failed to send push notification to ${address}: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
+  }
+
+  /**
+   * Dispatch a milestone event notification, short-circuiting before payload
+   * construction if the recipient opted out of milestone notifications (#932).
+   */
+  async notifyMilestoneEvent(
+    address: string,
+    data: MilestoneNotificationData,
+  ): Promise<boolean> {
+    const prefs = this.getPreferences(address);
+    // Short-circuit first before building templates (#932)
+    if (!prefs.milestoneNotifications || (!prefs.emailEnabled && !prefs.pushEnabled)) {
+      this.logger.debug(`Milestone notifications or channels disabled for ${address}; skipping template rendering`);
+      return false;
+    }
+
+    const subject = `Milestone Update: ${data.gigTitle}`;
+    const body = this.buildMilestoneEmailBody(data);
+
+    let notified = false;
+    if (prefs.emailEnabled) {
+      notified = await this.sendEmail(address, subject, body);
+    }
+    if (prefs.pushEnabled) {
+      notified = (await this.sendPushNotification(address, subject, body)) || notified;
+    }
+    return notified;
+  }
+
+  /**
+   * Build HTML email body for milestone updates
+   */
+  private buildMilestoneEmailBody(data: MilestoneNotificationData): string {
+    return `
+<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+  <h2 style="color: #27ae60;">Milestone Update</h2>
+  <p>Hello,</p>
+  <p>There is an update on your gig milestone:</p>
+  <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+    <tr><td style="padding: 8px; border: 1px solid #ddd;"><strong>Gig</strong></td>
+        <td style="padding: 8px; border: 1px solid #ddd;">${data.gigTitle}</td></tr>
+    <tr><td style="padding: 8px; border: 1px solid #ddd;"><strong>Milestone ID</strong></td>
+        <td style="padding: 8px; border: 1px solid #ddd;">${data.milestoneId}</td></tr>
+    <tr><td style="padding: 8px; border: 1px solid #ddd;"><strong>Status</strong></td>
+        <td style="padding: 8px; border: 1px solid #ddd;">${data.status}</td></tr>
+  </table>
+  ${data.message ? `<p>${data.message}</p>` : ''}
+</body>
+</html>`;
   }
 
   /**

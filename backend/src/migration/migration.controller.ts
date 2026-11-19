@@ -13,6 +13,7 @@ import { MigrationRunnerService } from './migration-runner.service';
 import { MigrationRegistryService } from './migration-registry.service';
 import {
   RunMigrationDto,
+  MarkMigrationAppliedDto,
   MigrationRunResponseDto,
   MigrationDefinitionResponseDto,
 } from './migration.dto';
@@ -84,5 +85,26 @@ export class MigrationController {
   @ApiResponse({ status: 409, description: 'Run still in progress' })
   rollback(@Param('runId') runId: string) {
     return this.runner.rollback(runId);
+  }
+
+  @Post(':name/mark-applied')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Mark a migration as applied out-of-band',
+    description:
+      'Records an out-of-band schema change in the migration registry with a mandatory audit note, ' +
+      'preventing the runner from attempting a redundant double-apply.',
+  })
+  @ApiParam({ name: 'name', example: 'gigs-add-priority-column' })
+  @ApiResponse({ status: 200, type: MigrationRunResponseDto })
+  @ApiResponse({ status: 400, description: 'Missing or invalid justification note' })
+  @ApiResponse({ status: 403, description: 'Caller is authenticated but not an admin address' })
+  @ApiResponse({ status: 404, description: 'Migration not registered' })
+  @ApiResponse({ status: 409, description: 'Migration already has an active run' })
+  markApplied(
+    @Param('name') name: string,
+    @Body() dto: MarkMigrationAppliedDto,
+  ) {
+    return this.runner.markApplied(name, dto);
   }
 }

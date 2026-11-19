@@ -52,6 +52,7 @@ describe('MigrationController', () => {
     findById: jest.fn(),
     run: jest.fn(),
     rollback: jest.fn(),
+    markApplied: jest.fn(),
   };
 
   const mockRegistry = {
@@ -141,6 +142,23 @@ describe('MigrationController', () => {
 
     it('rejects a non-boolean dryRun', async () => {
       await expect(transform({ dryRun: 'yes' })).rejects.toBeInstanceOf(BadRequestException);
+    });
+  });
+
+  describe('markApplied()', () => {
+    it('delegates to the runner with migration name and dto', async () => {
+      const dto = { reason: 'Applied manually during incident' };
+      mockRunner.markApplied.mockResolvedValue({
+        runId: 'mig-1',
+        migrationName: 'gigs-add-priority-column',
+        status: 'COMPLETED',
+        auditNote: 'Applied manually during incident',
+      });
+
+      const result = await controller.markApplied('gigs-add-priority-column', dto);
+
+      expect(mockRunner.markApplied).toHaveBeenCalledWith('gigs-add-priority-column', dto);
+      expect(result.status).toBe('COMPLETED');
     });
   });
 

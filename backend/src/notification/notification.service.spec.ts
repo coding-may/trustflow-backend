@@ -24,6 +24,7 @@ describe('NotificationService', () => {
         pushEnabled: true,
         disputeAlerts: true,
         evidenceReminders: true,
+        milestoneNotifications: true,
       });
     });
   });
@@ -98,6 +99,42 @@ describe('NotificationService', () => {
       });
       // Without API keys configured, returns false but doesn't throw
       expect(typeof result).toBe('boolean');
+    });
+  });
+
+  describe('notifyMilestoneEvent (#932)', () => {
+    it('should short-circuit and return false when milestone notifications are disabled', async () => {
+      const address = 'GMILESTONEOFF';
+      service.updatePreferences(address, { milestoneNotifications: false });
+      const spyBuild = jest.spyOn(service as any, 'buildMilestoneEmailBody');
+
+      const result = await service.notifyMilestoneEvent(address, {
+        gigId: 'gig-1',
+        gigTitle: 'Test Gig',
+        creator: 'GCREATOR',
+        milestoneId: 'm-1',
+        status: 'completed',
+      });
+
+      expect(result).toBe(false);
+      expect(spyBuild).not.toHaveBeenCalled();
+    });
+
+    it('should short-circuit and return false when all channels are disabled', async () => {
+      const address = 'GNOCHANNELS';
+      service.updatePreferences(address, { emailEnabled: false, pushEnabled: false });
+      const spyBuild = jest.spyOn(service as any, 'buildMilestoneEmailBody');
+
+      const result = await service.notifyMilestoneEvent(address, {
+        gigId: 'gig-2',
+        gigTitle: 'Test Gig 2',
+        creator: 'GCREATOR',
+        milestoneId: 'm-2',
+        status: 'completed',
+      });
+
+      expect(result).toBe(false);
+      expect(spyBuild).not.toHaveBeenCalled();
     });
   });
 });

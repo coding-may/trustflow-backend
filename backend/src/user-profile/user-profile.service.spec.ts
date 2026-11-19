@@ -198,6 +198,22 @@ describe('UserProfileService', () => {
       await expect(service.findById(created.id)).rejects.toThrow(NotFoundException);
     });
 
+    it('excludes soft-deleted profiles from list and search queries', async () => {
+      const created = await service.create({
+        walletAddress: 'GYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY',
+        name: 'Soft Deleted User',
+        userType: UserType.CLIENT,
+      });
+
+      await service.delete(created.id);
+
+      const all = await service.findAll();
+      expect(all.data.some(p => p.id === created.id)).toBe(false);
+
+      const searched = await service.search('Soft Deleted');
+      expect(searched.some(p => p.id === created.id)).toBe(false);
+    });
+
     it('should throw NotFoundException for non-existent profile', async () => {
       await expect(service.delete('non-existent-id')).rejects.toThrow(NotFoundException);
     });

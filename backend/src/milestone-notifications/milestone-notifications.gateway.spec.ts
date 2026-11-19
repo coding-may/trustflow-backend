@@ -171,7 +171,7 @@ describe('MilestoneNotificationsGateway', () => {
       {
         room: 'gig:gig-123',
         event: 'milestone:update',
-        payload: { v: 1, type: 'gig.accepted', data: { success: true } },
+        payload: { v: 1, type: 'gig.accepted', data: { success: true }, eventId: 'dedup-1' },
       },
     ]);
   });
@@ -518,5 +518,42 @@ describe('MilestoneNotificationsGateway subscriptions (#393)', () => {
       },
     } as unknown as Server;
     expect(gateway.getStats().rooms).toBe(2);
+  });
+
+  describe('Milestone reconnect catch-up & duplicate delivery prevention (#929, #930)', () => {
+    it('backfills missed events to reconnecting clients with resumeToken (#930)', async () => {
+      // Dispatch 2 events to gig-99
+      await harness.dispatch({ aggregateId: 'gig-99', dedupKey: 'evt-1', payload: { step: 1 } });
+      await harness.dispatch({ aggregateId: 'gig-99', dedupKey: 'evt-2', payload: { step: 2 } });
+
+      const client = fakeSocket('reconnecting-socket');
+      harness.gateway.handleConnection(client);
+
+      // Reconnect with resumeToken='evt-1' -> should receive only evt-2
+      const ack = harness.gateway.handleSubscribeGig(client, {
+        gigId: 'gig-99',
+        resumeToken: 'evt-1',
+      });
+
+      expect(ack.event).toBe('subscribed');
+      expect(ack.data.gigId).toBe('gig-99');
+      expect(ack.data.backfilled).toBe(1);
+      expect(client.emit).toHaveBeenCalledWith('milestone:update', {
+        v: 1,
+        type: 'gig.accepted',
+        data: { step: 2 },
+        eventId: 'evt-2',
+      });
+    });
+
+    it('drops duplicate direct emits when already claimed (#929)', async () => {
+      // First outbox dispatch claims evt-100
+      await harness.dispatch({ aggregateId: 'gig-100', dedupKey: 'evt-100', payload: { direct: false } });
+      const countAfterOutbox = harness.emissions.length;
+
+      // Duplicate direct emit with the same eventId should be dropped
+      await harness.gateway.emitMilestoneUpdate('gig-100', 'gig.accepted', { direct: true }, 'evt-100');
+      expect(harness.emissions.length).toBe(countAfterOutbox);
+    });
   });
 });

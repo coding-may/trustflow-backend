@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  IsBase64,
   IsString,
   IsNotEmpty,
   IsArray,
@@ -18,6 +19,7 @@ import {
 } from 'class-validator';
 import { DisputeStep, DisputeVerdict, JurorVote, SagaStepRecord } from './dispute.types';
 import { StrKey } from '@stellar/stellar-sdk';
+import { MAX_BASE64_CONTENT_LENGTH } from '../ipfs-pinning/ipfs-pinning.types';
 
 @ValidatorConstraint({ name: 'isStellarAddress', async: false })
 export class IsStellarAddressValidator implements ValidatorConstraintInterface {
@@ -93,6 +95,40 @@ export class ExecutePayoutDto {
   splitPercentage?: number;
 }
 
+/**
+ * Evidence attachment payload. Uses the same shared base64 size limit as the deliverable
+ * upload endpoint, so an oversized file is rejected by validation *before* any bytes are
+ * decoded or forwarded to pinning storage.
+ */
+export class SubmitEvidenceDto {
+  @ApiProperty({
+    description:
+      'Base64-encoded evidence file. Maximum decoded size is 10 MB (~13.6 MB base64), ' +
+      'the same shared limit used by deliverable uploads.',
+    example: 'SGVsbG8sIFRydXN0RmxvdyE=',
+  })
+  @IsBase64()
+  @IsNotEmpty()
+  @MaxLength(MAX_BASE64_CONTENT_LENGTH, {
+    message: 'content exceeds the maximum allowed size of 10 MB (decoded)',
+  })
+  content!: string;
+
+  @ApiPropertyOptional({ description: 'Original filename, stored for display purposes only' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  filename?: string;
+}
+
+export class DisputeEvidenceDto {
+  @ApiProperty() cid!: string;
+  @ApiProperty() size!: number;
+  @ApiPropertyOptional() filename?: string;
+  @ApiProperty() submittedBy!: string;
+  @ApiProperty() submittedAt!: string;
+}
+
 export class SagaStepRecordDto implements SagaStepRecord {
   @ApiProperty({ enum: DisputeStep }) step!: DisputeStep;
   @ApiProperty() startedAt!: string;
@@ -113,6 +149,7 @@ export class DisputeSagaResponseDto {
   @ApiPropertyOptional() votes?: JurorVote[];
   @ApiPropertyOptional({ enum: DisputeVerdict }) verdict?: DisputeVerdict;
   @ApiPropertyOptional() payoutTxHash?: string;
+  @ApiPropertyOptional({ type: [DisputeEvidenceDto] }) evidence?: DisputeEvidenceDto[];
   @ApiProperty({ type: [SagaStepRecordDto] }) stepHistory!: SagaStepRecordDto[];
   @ApiProperty() createdAt!: string;
   @ApiProperty() updatedAt!: string;

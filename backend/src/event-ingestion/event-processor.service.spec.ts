@@ -1,5 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { EventProcessorService, SorobanEvent } from './event-processor.service';
+import {
+  EVENTS_DEAD_LETTERED_TOTAL,
+  EVENTS_INGESTED_TOTAL,
+  EventProcessorService,
+  SorobanEvent,
+  getEventIdentity,
+} from './event-processor.service';
 import { EscrowService } from '../escrow/escrow.service';
 
 describe('EventProcessorService', () => {
@@ -190,6 +196,94 @@ describe('EventProcessorService', () => {
 
       expect(result.success).toBe(true);
       expect(mockEscrowService.createFromChainState).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('ingestion metrics and dead-letter identity', () => {
+    let metrics: { increment: jest.Mock };
+    let serviceWithMetrics: EventProcessorService;
+
+    beforeEach(() => {
+      metrics = { increment: jest.fn() };
+      serviceWithMetrics = new EventProcessorService(
+        mockEscrowService as never,
+        null,
+        metrics as never,
+      );
+    });
+
+    const successfulEvent = (): SorobanEvent => ({
+      id: '0000000000000064-0000000000000001-0000000000000000',
+      ledger: 100,
+      contractId: 'test-contract',
+      eventType: 'escrow_created',
+      topic: ['escrow_created', 'contract-esc-123'],
+      value: { depositor: 'GABC...', beneficiary: 'GDEF...', amount: '100' },
+      xdr: 'test-xdr',
+      createdAt: new Date(),
+    });
+
+    it('increments events_ingested_total once per successfully ingested event', async () => {
+      mockEscrowService.findByContractEscrowId.mockResolvedValueOnce(undefined);
+
+      const result = await serviceWithMetrics.processEvent(successfulEvent());
+
+      expect(result.success).toBe(true);
+      expect(metrics.increment).toHaveBeenCalledTimes(1);
+      expect(metrics.increment).toHaveBeenCalledWith(EVENTS_INGESTED_TOTAL, {
+        event_type: 'escrow_created',
+      });
+      expect(metrics.increment).not.toHaveBeenCalledWith(
+        EVENTS_DEAD_LETTERED_TOTAL,
+        expect.anything(),
+      );
+    });
+
+    it('increments events_dead_lettered_total once per failed event, never the success counter', async () => {
+      mockEscrowService.findByContractEscrowId.mockResolvedValueOnce(undefined);
+      const event: SorobanEvent = {
+        ...successfulEvent(),
+        id: '0000000000000064-0000000000000001-0000000000000003',
+        eventType: 'escrow_funded',
+        topic: ['escrow_funded', 'contract-missing'],
+      };
+
+      const result = await serviceWithMetrics.processEvent(event);
+
+      expect(result.success).toBe(false);
+      expect(metrics.increment).toHaveBeenCalledTimes(1);
+      expect(metrics.increment).toHaveBeenCalledWith(EVENTS_DEAD_LETTERED_TOTAL, {
+        event_type: 'escrow_funded',
+      });
+      expect(metrics.increment).not.toHaveBeenCalledWith(EVENTS_INGESTED_TOTAL, expect.anything());
+    });
+
+    it('records the individual tx hash and event index that caused the failure', async () => {
+      mockEscrowService.findByContractEscrowId.mockResolvedValueOnce(undefined);
+      const event: SorobanEvent = {
+        ...successfulEvent(),
+        id: '0000000000000064-0000000000000002-0000000000000007',
+        txHash: 'a1b2c3d4',
+        eventType: 'escrow_funded',
+        topic: ['escrow_funded', 'contract-missing'],
+      };
+
+      const result = await serviceWithMetrics.processEvent(event);
+
+      expect(result.success).toBe(false);
+      expect(result.txHash).toBe('a1b2c3d4');
+      expect(result.eventIndex).toBe(7);
+    });
+
+    it('derives the tx identifier and event index from a Soroban event id', () => {
+      expect(
+        getEventIdentity({
+          id: '0000000000000064-0000000000000002-000000000000000a',
+        } as SorobanEvent),
+      ).toEqual({
+        txHash: '0000000000000064-0000000000000002',
+        eventIndex: 10,
+      });
     });
   });
 

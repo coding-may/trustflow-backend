@@ -7,6 +7,8 @@ import { mapWithConcurrency, countRejected } from '../common/concurrency';
 import { config } from '../config/env.config';
 import { MetricsService } from '../monitoring/metrics.service';
 import { SentryService } from '../sentry/sentry.service';
+import { EscrowService } from '../escrow/escrow.service';
+import { Optional } from '@nestjs/common';
 
 const LOCK_KEY = 'lock:gig-expiry-sweep';
 const LOCK_RENEWAL_INTERVAL_MS = 10_000;
@@ -45,6 +47,7 @@ export class GigExpiryWorkerService implements OnModuleInit, OnModuleDestroy {
     private readonly lock: DistributedLockService,
     private readonly metrics: MetricsService,
     private readonly sentry: SentryService,
+    @Optional() private readonly escrowService?: EscrowService,
   ) {}
 
   onModuleInit(): void {

@@ -1,8 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { EventIngestionService } from './event-ingestion.service';
 import { LedgerCursorService } from './ledger-cursor.service';
 import { EventProcessorService } from './event-processor.service';
 import { EscrowService } from '../escrow/escrow.service';
+import { IngestionHealthService } from '../monitoring/ingestion-health.service';
 import { validateEnv } from '../config/env.config';
 
 // EventIngestionService reads config.EVENT_PROCESSING_CONCURRENCY in its constructor,
@@ -13,6 +15,7 @@ describe('EventIngestionService', () => {
   let service: EventIngestionService;
   let ledgerCursorService: LedgerCursorService;
   let eventProcessorService: EventProcessorService;
+  let ingestionHealthService: IngestionHealthService;
 
   const mockEscrowService = {
     create: jest.fn(),
@@ -29,6 +32,7 @@ describe('EventIngestionService', () => {
         EventIngestionService,
         LedgerCursorService,
         EventProcessorService,
+        IngestionHealthService,
         { provide: EscrowService, useValue: mockEscrowService },
       ],
     }).compile();
@@ -36,10 +40,44 @@ describe('EventIngestionService', () => {
     service = module.get<EventIngestionService>(EventIngestionService);
     ledgerCursorService = module.get<LedgerCursorService>(LedgerCursorService);
     eventProcessorService = module.get<EventProcessorService>(EventProcessorService);
+    ingestionHealthService = module.get<IngestionHealthService>(IngestionHealthService);
   });
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  describe('getLedgerBounds and ingestion health (#987)', () => {
+    // onModuleInit() (which assigns the real rpcServer) only runs via module.init(), not plain
+    // compile() — stub it directly instead, scoped to this block, rather than calling
+    // module.init() for the whole file: that also starts other providers' lifecycle hooks and,
+    // for `startPolling`, triggers a real outbound RPC call with no mock in place.
+    beforeEach(() => {
+      (service as unknown as { rpcServer: SorobanRpc.Server }).rpcServer = {
+        getHealth: jest.fn(),
+      } as unknown as SorobanRpc.Server;
+    });
+
+    it('records a successful poll when the RPC node answers getHealth', async () => {
+      jest.spyOn(service['rpcServer'], 'getHealth').mockResolvedValue({
+        status: 'healthy',
+        latestLedger: 200,
+        oldestLedger: 1,
+      } as Awaited<ReturnType<SorobanRpc.Server['getHealth']>>);
+
+      await service['getLedgerBounds']();
+
+      expect(ingestionHealthService.getLastSuccessfulPollAt()).not.toBeNull();
+      expect(ingestionHealthService.isHealthy()).toBe(true);
+    });
+
+    it('does not record a successful poll when the RPC node call throws (bad RPC credentials)', async () => {
+      jest.spyOn(service['rpcServer'], 'getHealth').mockRejectedValue(new Error('Unauthorized'));
+
+      await service['getLedgerBounds']();
+
+      expect(ingestionHealthService.getLastSuccessfulPollAt()).toBeNull();
+    });
   });
 
   describe('getStatus', () => {
@@ -95,7 +133,7 @@ describe('EventIngestionService', () => {
           oldestLedger: 1,
           latestLedgerCloseTime: '0',
           oldestLedgerCloseTime: '0',
-        })
+        } as any)
         .mockResolvedValueOnce({
           events: mockEvents.slice(50, 100),
           cursor: undefined,
@@ -103,7 +141,7 @@ describe('EventIngestionService', () => {
           oldestLedger: 1,
           latestLedgerCloseTime: '0',
           oldestLedgerCloseTime: '0',
-        });
+        } as any);
 
       const result = await service['fetchEvents']('test-contract', 100, 199);
 
@@ -135,7 +173,7 @@ describe('EventIngestionService', () => {
         oldestLedger: 1,
         latestLedgerCloseTime: '0',
         oldestLedgerCloseTime: '0',
-      });
+      } as any);
 
       await service['fetchEvents']('test-contract', 1000, 1050);
 
@@ -244,63 +282,66 @@ describe('EventIngestionService', () => {
       expect(mockEscrowService.fund).toHaveBeenCalledWith('db-escrow-123');
     });
   });
-});
 
-describe('EventIngestionService.processEventBatch — per-escrow ordering (#238)', () => {
-  const mkEvent = (
-    id: string,
-    eventType: string,
-    escrowId?: string,
-  ): import('./event-processor.service').SorobanEvent => ({
-    id,
-    ledger: 1,
-    contractId: 'C1',
-    eventType,
-    topic: escrowId ? [eventType, escrowId] : [eventType],
-    value: {},
-    xdr: '',
-    createdAt: new Date(),
-  });
-
-  it('processes same-escrow events in order and independent escrows in parallel', async () => {
-    const order: string[] = [];
-    jest.spyOn(eventProcessorService, 'processEvent').mockImplementation(async event => {
-      order.push(event.id);
-      // Make the FIRST call slow so a naive parallel-all would reorder.
-      if (event.id === 'A-fund') await new Promise(r => setTimeout(r, 30));
-      return { eventId: event.id, ledger: 1, success: true, processedAt: new Date() };
+  // Nested inside the outer describe so `service`/`eventProcessorService` (set up in its
+  // `beforeEach`) are in scope here — this used to be a sibling top-level `describe`, which
+  // left every reference to them unresolved and the whole file failing to compile.
+  describe('EventIngestionService.processEventBatch — per-escrow ordering (#238)', () => {
+    const mkEvent = (
+      id: string,
+      eventType: string,
+      escrowId?: string,
+    ): import('./event-processor.service').SorobanEvent => ({
+      id,
+      ledger: 1,
+      contractId: 'C1',
+      eventType,
+      topic: escrowId ? [eventType, escrowId] : [eventType],
+      value: {},
+      xdr: '',
+      createdAt: new Date(),
     });
 
-    const events = [
-      mkEvent('A-create', 'escrow_created'),
-      mkEvent('B-create', 'escrow_created'),
-      mkEvent('A-fund', 'escrow_funded', 'A'),
-      mkEvent('A-release', 'escrow_released', 'A'),
-      mkEvent('B-fund', 'escrow_funded', 'B'),
-    ];
+    it('processes same-escrow events in order and independent escrows in parallel', async () => {
+      const order: string[] = [];
+      jest.spyOn(eventProcessorService, 'processEvent').mockImplementation(async event => {
+        order.push(event.id);
+        // Make the FIRST call slow so a naive parallel-all would reorder.
+        if (event.id === 'A-fund') await new Promise(r => setTimeout(r, 30));
+        return { eventId: event.id, ledger: 1, success: true, processedAt: new Date() };
+      });
 
-    const results = await service.processEventBatch(events);
+      const events = [
+        mkEvent('A-create', 'escrow_created'),
+        mkEvent('B-create', 'escrow_created'),
+        mkEvent('A-fund', 'escrow_funded', 'A'),
+        mkEvent('A-release', 'escrow_released', 'A'),
+        mkEvent('B-fund', 'escrow_funded', 'B'),
+      ];
 
-    expect(results).toHaveLength(5);
-    // Phase 1: both creates ran first, in order.
-    expect(order.slice(0, 2)).toEqual(['A-create', 'B-create']);
-    // Within escrow A, fund strictly precedes release despite fund being slow.
-    expect(order.indexOf('A-fund')).toBeLessThan(order.indexOf('A-release'));
-    // Escrow B was not blocked behind slow escrow A.
-    expect(order.indexOf('B-fund')).toBeLessThan(order.indexOf('A-release'));
-  });
+      const results = await service.processEventBatch(events);
 
-  it('does not throw when an individual event fails', async () => {
-    jest.spyOn(eventProcessorService, 'processEvent').mockImplementation(async event => ({
-      eventId: event.id,
-      ledger: 1,
-      success: event.id !== 'bad',
-      processedAt: new Date(),
-    }));
-    const results = await service.processEventBatch([
-      mkEvent('ok', 'escrow_funded', 'X'),
-      mkEvent('bad', 'escrow_funded', 'Y'),
-    ]);
-    expect(results.map(r => r.success).sort()).toEqual([false, true]);
+      expect(results).toHaveLength(5);
+      // Phase 1: both creates ran first, in order.
+      expect(order.slice(0, 2)).toEqual(['A-create', 'B-create']);
+      // Within escrow A, fund strictly precedes release despite fund being slow.
+      expect(order.indexOf('A-fund')).toBeLessThan(order.indexOf('A-release'));
+      // Escrow B was not blocked behind slow escrow A.
+      expect(order.indexOf('B-fund')).toBeLessThan(order.indexOf('A-release'));
+    });
+
+    it('does not throw when an individual event fails', async () => {
+      jest.spyOn(eventProcessorService, 'processEvent').mockImplementation(async event => ({
+        eventId: event.id,
+        ledger: 1,
+        success: event.id !== 'bad',
+        processedAt: new Date(),
+      }));
+      const results = await service.processEventBatch([
+        mkEvent('ok', 'escrow_funded', 'X'),
+        mkEvent('bad', 'escrow_funded', 'Y'),
+      ]);
+      expect(results.map((r: { success: boolean }) => r.success).sort()).toEqual([false, true]);
+    });
   });
 });

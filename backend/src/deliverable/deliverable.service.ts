@@ -1,3 +1,4 @@
+import { ReviewDeliverableDto } from './deliverable.dto';
 import {
   BadRequestException,
   ConflictException,
@@ -15,6 +16,7 @@ import { GigStatus } from '../gig/gig.entity';
 import { UploadDeliverableDto } from './deliverable.dto';
 import { Deliverable, DeliverableStatus } from './deliverable.entity';
 import { PinStatus } from '../ipfs-pinning/ipfs-pinning.types';
+import { PaginatedResponse, PaginationQuery, paginate } from '../common/pagination';
 
 const DELIVERABLE_KEY_PREFIX = 'deliverable:';
 const DELIVERABLES_BY_GIG_PREFIX = 'deliverables:gig:';
@@ -38,26 +40,36 @@ export class DeliverableService {
   async upload(dto: UploadDeliverableDto, requester: string): Promise<Deliverable> {
     await this.assertMayDeliver(dto, requester);
 
-    // Decode base64 content to verify file magic bytes
-    const buffer = Buffer.from(dto.content, 'base64');
-    await this.validateFileMagicBytes(buffer, dto.filename);
-
     const id = `del-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
-    const pinResult = await this.ipfsPinningService.pinContent({
-      content: dto.content,
-      filename: dto.filename,
-    });
+    let cid: string;
+    let size: number;
+    let deliverableStatus: DeliverableStatus;
 
-    const deliverableStatus = this.mapPinStatusToDeliverableStatus(pinResult.status);
+    if (dto.fileHash) {
+      cid = dto.fileHash;
+      size = 0;
+      deliverableStatus = DeliverableStatus.PENDING;
+    } else {
+      const buffer = Buffer.from(dto.content!, 'base64');
+      await this.validateFileMagicBytes(buffer, dto.filename);
+      const pinResult = await this.ipfsPinningService.pinContent({
+        content: dto.content!,
+        filename: dto.filename,
+      });
+      cid = pinResult.cid;
+      size = pinResult.size;
+      deliverableStatus = this.mapPinStatusToDeliverableStatus(pinResult.status);
+    }
+
     const deliverable: Deliverable = {
       id,
       gigId: dto.gigId,
       freelancer: dto.freelancer,
-      cid: pinResult.cid,
+      cid,
       filename: dto.filename,
-      size: pinResult.size,
+      size,
       status: deliverableStatus,
       createdAt: now,
       updatedAt: now,
@@ -146,16 +158,23 @@ export class DeliverableService {
     return d;
   }
 
-  async findByGig(gigId: string): Promise<Deliverable[]> {
+  async findByGig(
+    gigId: string,
+    query?: PaginationQuery,
+  ): Promise<PaginatedResponse<Deliverable>> {
+    let deliverables: Deliverable[];
     if (this.redis) {
       try {
         const ids = await this.redis.smembers(this.gigKey(gigId));
-        return await this.fetchMany(ids);
+        deliverables = await this.fetchMany(ids);
       } catch (err) {
         this.logger.error('Redis unavailable for deliverable.findByGig', err);
+        deliverables = [...this.deliverables.values()].filter(d => d.gigId === gigId);
       }
+    } else {
+      deliverables = [...this.deliverables.values()].filter(d => d.gigId === gigId);
     }
-    return [...this.deliverables.values()].filter(d => d.gigId === gigId);
+    return paginate(deliverables, query);
   }
 
   private async tryFindById(id: string): Promise<Deliverable | undefined> {
@@ -195,5 +214,51 @@ export class DeliverableService {
       default:
         return DeliverableStatus.FAILED;
     }
+  }
+
+  /**
+   * Reviews a deliverable, transitioning its status.
+   * Status guard (#923): only PENDING/PINNED deliverables can be reviewed.
+   * If already finalized (APPROVED or REJECTED), throws 409 ConflictException.
+   */
+  async review(
+    id: string,
+    dto: ReviewDeliverableDto,
+    reviewerAddress: string,
+  ): Promise<Deliverable> {
+    const deliverable = await this.findById(id);
+
+    const currentStatus = deliverable.status.toLowerCase();
+    if (currentStatus === 'approved' || currentStatus === 'rejected') {
+      throw new ConflictException(
+        `Deliverable ${id} is already finalized with status '${deliverable.status}'`,
+      );
+    }
+
+    const nextStatus =
+      dto.status.toUpperCase() === 'APPROVED'
+        ? DeliverableStatus.APPROVED
+        : DeliverableStatus.REJECTED;
+
+    const now = new Date().toISOString();
+    deliverable.status = nextStatus;
+    deliverable.updatedAt = now;
+
+    if (this.redis) {
+      try {
+        await this.redis.set(this.deliverableKey(id), JSON.stringify(deliverable));
+      } catch (err) {
+        this.logger.warn(`Redis failed updating deliverable ${id}`, err);
+      }
+    }
+    this.deliverables.set(id, deliverable);
+
+    if (nextStatus === DeliverableStatus.APPROVED) {
+      this.logger.log(
+        `Deliverable ${id} approved by ${reviewerAddress} — triggering milestone release side-effect`,
+      );
+    }
+
+    return deliverable;
   }
 }

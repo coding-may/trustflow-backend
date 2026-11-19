@@ -18,6 +18,8 @@ import {
   CastVoteDto,
   ExecutePayoutDto,
   DisputeSagaResponseDto,
+  SubmitEvidenceDto,
+  DisputeEvidenceDto,
 } from './dispute.dto';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../admin/admin.guard';
@@ -93,6 +95,28 @@ export class DisputeSagaController {
       initiator: req.user.address,
     };
     return this.sagaService.escalate(escrowId, escalateDto);
+  }
+
+  @Post(':sagaId/evidence')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Attach dispute evidence',
+    description:
+      'Pins a base64-encoded evidence file to IPFS and records its CID on the saga. ' +
+      'The same 10 MB decoded size limit as deliverable uploads is enforced on the raw ' +
+      'request before any content is decoded or forwarded to pinning storage.',
+  })
+  @ApiParam({ name: 'sagaId', example: 'saga-1234567890-abc' })
+  @ApiResponse({ status: 201, type: DisputeEvidenceDto })
+  @ApiResponse({ status: 400, description: 'Invalid or oversized evidence content' })
+  @ApiResponse({ status: 403, description: 'Caller is not a party to the dispute' })
+  @ApiResponse({ status: 404, description: 'Saga not found' })
+  attachEvidence(
+    @Param('sagaId') sagaId: string,
+    @Body() dto: SubmitEvidenceDto,
+    @Req() req: AuthenticatedRequest,
+  ) {
+    return this.sagaService.attachEvidence(sagaId, dto, req.user.address);
   }
 
   @Post(':sagaId/assign-jurors')

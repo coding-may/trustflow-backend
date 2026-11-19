@@ -1,7 +1,13 @@
 import { HealthService } from './health.service';
 import { DatabaseService } from '../common/database/database.service';
 import { DrainStateService } from '../common/shutdown/drain-state.service';
+import { validateEnv } from '../config/env.config';
 import type { Redis } from 'ioredis';
+
+// checkStellar() reads config.STELLAR_HEALTH_CHECK_TIMEOUT_MS / config.STELLAR_HORIZON_URL,
+// which requires validateEnv() to have run first — normally done once in main.ts (see
+// health.postgres-integration.spec.ts, rpc-failover.service.spec.ts).
+validateEnv();
 
 describe('HealthService', () => {
   const originalFetch = global.fetch;
@@ -129,6 +135,15 @@ describe('HealthService', () => {
       database: true,
       redis: true,
       memory: true,
+      eventIngestion: true,
     });
+  });
+
+  it('reports eventIngestion: true when no IngestionHealthService is wired in (unit test wiring)', async () => {
+    mockFetchOk(true);
+
+    const status = await new HealthService().check();
+
+    expect(status.checks.eventIngestion).toBe(true);
   });
 });

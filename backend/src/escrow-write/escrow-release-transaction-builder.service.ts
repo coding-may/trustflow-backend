@@ -21,6 +21,14 @@ export const ESCROW_WRITE_STELLAR_CONFIG = 'ESCROW_WRITE_STELLAR_CONFIG';
  */
 const RELEASE_ENTRYPOINT = 'release';
 
+/**
+ * Headroom applied to the RPC's `minResourceFee` before it becomes the transaction fee.
+ * Soroban resource prices can drift between simulation and submission, so a small margin
+ * (10%) keeps an otherwise-valid invocation from failing with `tx_insufficient_fee`.
+ */
+const RESOURCE_FEE_MARGIN_BASIS_POINTS = 1_100n; // 110% of the simulated minimum
+const BASIS_POINTS = 1_000n;
+
 export interface UnsignedReleaseTransaction {
   xdr: string;
   network: string;
@@ -64,20 +72,47 @@ export class EscrowReleaseTransactionBuilderService {
 
     const account = await this.rpcServer.getAccount(sourceAccount);
     const contract = new Contract(this.config.contractId);
+    const operation = contract.call(
+      RELEASE_ENTRYPOINT,
+      nativeToScVal(contractEscrowId, { type: 'string' }),
+    );
 
-    const tx = new TransactionBuilder(account, {
-      fee: BASE_FEE,
-      networkPassphrase: this.config.networkPassphrase,
-    })
-      .addOperation(
-        contract.call(RELEASE_ENTRYPOINT, nativeToScVal(contractEscrowId, { type: 'string' })),
-      )
-      .setTimeout(config.STELLAR_TX_VALIDITY_SECONDS)
-      .build();
+    const buildWithFee = (fee: string): TransactionBuilder =>
+      new TransactionBuilder(account, {
+        fee,
+        networkPassphrase: this.config.networkPassphrase,
+      })
+        .addOperation(operation)
+        .setTimeout(config.STELLAR_TX_VALIDITY_SECONDS);
 
-    const prepared = await this.rpcServer.prepareTransaction(tx);
+    // Simulate explicitly so the resource fee estimated from the contract invocation is
+    // actually used. Relying on the flat BASE_FEE (or on prepareTransaction's implicit
+    // simulation) left above-baseline invocations under-funded at submission time.
+    const simulation = await this.rpcServer.simulateTransaction(buildWithFee(BASE_FEE).build());
+    if (SorobanRpc.Api.isSimulationError(simulation)) {
+      throw new Error(
+        `Release simulation failed for escrow ${contractEscrowId}: ${simulation.error}`,
+      );
+    }
 
-    this.logger.log(`Built unsigned release transaction for escrow ${contractEscrowId}`);
+    const minResourceFee = BigInt(simulation.minResourceFee ?? '0');
+    const margin =
+      (minResourceFee * RESOURCE_FEE_MARGIN_BASIS_POINTS) / BASIS_POINTS - minResourceFee;
+    // `assembleTransaction` sets the final fee to `tx.fee + minResourceFee`. Seed the classic
+    // fee with BASE_FEE plus the 10% margin so the final fee becomes
+    // BASE_FEE + minResourceFee + margin — never the flat base fee alone.
+    const seededFee = (BigInt(BASE_FEE) + margin).toString();
+
+    // Assemble auth/footprint from the simulation we already have (no second RPC call).
+    const prepared = SorobanRpc.assembleTransaction(
+      buildWithFee(seededFee).build(),
+      simulation,
+    ).build();
+
+    this.logger.log(
+      `Built unsigned release transaction for escrow ${contractEscrowId} with fee ${prepared.fee} ` +
+        `(minResourceFee=${minResourceFee.toString()})`,
+    );
 
     return {
       xdr: prepared.toXDR(),

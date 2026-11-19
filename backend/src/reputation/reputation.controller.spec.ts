@@ -1,9 +1,24 @@
-import { INestApplication, VersioningType } from '@nestjs/common';
+import {
+  ExecutionContext,
+  ForbiddenException,
+  INestApplication,
+  VersioningType,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { ReputationController } from './reputation.controller';
 import { ReputationService } from './reputation.service';
 import { REPUTATION_LEADERBOARD_DEFAULT_LIMIT } from './reputation.types';
+import { JwtAuthGuard } from '../auth/auth.guard';
+import { validateEnv, resetEnvConfig } from '../config/env.config';
+
+// getScoreBreakdown() reads config.ADMIN_ADDRESSES, which requires validateEnv() to have run
+// first — normally done once in main.ts.
+validateEnv();
+
+function reqAs(address: string) {
+  return { user: { address, sub: address } };
+}
 
 describe('ReputationController', () => {
   let controller: ReputationController;
@@ -11,6 +26,7 @@ describe('ReputationController', () => {
   const mockService = {
     getScore: jest.fn(),
     getLeaderboard: jest.fn(),
+    getScoreBreakdown: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -72,23 +88,79 @@ describe('ReputationController', () => {
       expect(mockService.getLeaderboard).toHaveBeenCalledWith(REPUTATION_LEADERBOARD_DEFAULT_LIMIT);
     });
   });
+
+  describe('getScoreBreakdown (#989)', () => {
+    const originalAdminAddresses = process.env.ADMIN_ADDRESSES;
+
+    function setAdminAddresses(value: string | undefined) {
+      if (value === undefined) delete process.env.ADMIN_ADDRESSES;
+      else process.env.ADMIN_ADDRESSES = value;
+      resetEnvConfig();
+      validateEnv();
+    }
+
+    afterEach(() => {
+      setAdminAddresses(originalAdminAddresses);
+    });
+
+    it('allows the address owner and delegates to the service', () => {
+      setAdminAddresses(undefined);
+      mockService.getScoreBreakdown.mockReturnValue({ address: 'GABC', events: [] });
+
+      const result = controller.getScoreBreakdown('GABC', reqAs('GABC'));
+
+      expect(mockService.getScoreBreakdown).toHaveBeenCalledWith('GABC');
+      expect(result).toEqual({ address: 'GABC', events: [] });
+    });
+
+    it('allows an admin viewing a different address', () => {
+      setAdminAddresses('GADMIN');
+      mockService.getScoreBreakdown.mockReturnValue({ address: 'GABC', events: [] });
+
+      const result = controller.getScoreBreakdown('GABC', reqAs('GADMIN'));
+
+      expect(mockService.getScoreBreakdown).toHaveBeenCalledWith('GABC');
+      expect(result).toEqual({ address: 'GABC', events: [] });
+    });
+
+    it('rejects a caller who is neither the owner nor an admin', () => {
+      setAdminAddresses('GADMIN');
+
+      expect(() => controller.getScoreBreakdown('GABC', reqAs('GSTRANGER'))).toThrow(
+        ForbiddenException,
+      );
+      expect(mockService.getScoreBreakdown).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('ReputationController Supertest integration', () => {
   let app: INestApplication;
+  let requestUserAddress: string;
 
   const mockService = {
     getScore: jest.fn(),
     getLeaderboard: jest.fn(),
+    getScoreBreakdown: jest.fn(),
   };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    requestUserAddress = 'GABC';
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ReputationController],
       providers: [{ provide: ReputationService, useValue: mockService }],
-    }).compile();
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (context: ExecutionContext) => {
+          const request = context.switchToHttp().getRequest<{ user?: unknown }>();
+          request.user = { address: requestUserAddress, sub: 'x' };
+          return true;
+        },
+      })
+      .compile();
 
     app = module.createNestApplication();
     app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
@@ -145,5 +217,33 @@ describe('ReputationController Supertest integration', () => {
 
     expect(mockService.getScore).not.toHaveBeenCalled();
     expect(mockService.getLeaderboard).toHaveBeenCalled();
+  });
+
+  describe('GET /reputation/:address/breakdown (#989)', () => {
+    it('returns the breakdown for the authenticated owner', async () => {
+      requestUserAddress = 'GABC';
+      mockService.getScoreBreakdown.mockReturnValue({
+        address: 'GABC',
+        score: 12.5,
+        eventCount: 1,
+        lastUpdatedAt: '2026-01-01T00:00:00.000Z',
+        events: [],
+      });
+
+      const response = await request(app.getHttpServer())
+        .get('/v1/reputation/GABC/breakdown')
+        .expect(200);
+
+      expect(response.body).toMatchObject({ address: 'GABC', score: 12.5 });
+      expect(mockService.getScoreBreakdown).toHaveBeenCalledWith('GABC');
+    });
+
+    it('returns 403 for an authenticated caller who is not the owner', async () => {
+      requestUserAddress = 'GSTRANGER';
+
+      await request(app.getHttpServer()).get('/v1/reputation/GABC/breakdown').expect(403);
+
+      expect(mockService.getScoreBreakdown).not.toHaveBeenCalled();
+    });
   });
 });

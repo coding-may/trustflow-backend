@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { SentryService, scrubEvent } from './sentry.service';
+import { SentryService, scrubEvent, computeSorobanFingerprint } from './sentry.service';
 
 // Mock @sentry/node so tests never make network calls
 jest.mock('@sentry/node', () => ({
@@ -71,6 +71,14 @@ describe('SentryService', () => {
       process.env.NODE_ENV = 'development';
       service.init();
       expect(Sentry.init).toHaveBeenCalledWith(expect.objectContaining({ tracesSampleRate: 1.0 }));
+    });
+
+    it('should use configured SENTRY_TRACES_SAMPLE_RATE when provided (#934)', () => {
+      process.env.SENTRY_DSN = 'https://test@sentry.io/1';
+      process.env.NODE_ENV = 'production';
+      process.env.SENTRY_TRACES_SAMPLE_RATE = '0.05';
+      service.init();
+      expect(Sentry.init).toHaveBeenCalledWith(expect.objectContaining({ tracesSampleRate: 0.05 }));
     });
   });
 
@@ -264,5 +272,32 @@ describe('scrubEvent (#651)', () => {
   it('tolerates a request that is absent or malformed', () => {
     expect(() => scrubEvent({})).not.toThrow();
     expect(scrubEvent({ request: undefined }).request).toBeUndefined();
+  });
+
+  describe('Soroban error fingerprinting (#935)', () => {
+    it('sets normalized fingerprint for Soroban error with tx hash', () => {
+      const txHash1 = 'a1b2c3d4e5f60123456789abcdef0123456789abcdef0123456789abcdef0123';
+      const txHash2 = 'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210';
+
+      const event1 = scrubEvent({
+        message: `Soroban transaction ${txHash1} failed at ledger 123456`,
+      });
+      const event2 = scrubEvent({
+        message: `Soroban transaction ${txHash2} failed at ledger 789012`,
+      });
+
+      expect(event1.fingerprint).toBeDefined();
+      expect(event2.fingerprint).toBeDefined();
+      expect(event1.fingerprint).toEqual(event2.fingerprint);
+      expect(event1.fingerprint?.[1]).toContain('<tx-hash>');
+      expect(event1.fingerprint?.[1]).toContain('<num>');
+    });
+
+    it('does not set custom fingerprint on ordinary non-Soroban errors', () => {
+      const event = scrubEvent({
+        message: 'Normal database connection error',
+      });
+      expect(event.fingerprint).toBeUndefined();
+    });
   });
 });

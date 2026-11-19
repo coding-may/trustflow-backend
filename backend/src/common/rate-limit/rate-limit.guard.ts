@@ -126,8 +126,13 @@ redis.call('EXPIRE', abuse_key, abuse_window_seconds)
 
 local abuse_count = redis.call('ZCARD', abuse_key)
 if abuse_count >= abuse_threshold then
-  redis.call('SET', lockout_key, '1', 'EX', lockout_seconds)
-  return {0, lockout_seconds}
+  -- Escalate lockout duration for repeat offenders within rolling window (#938)
+  local offense_key = KEYS[2] .. ':offenses'
+  local offenses = redis.call('INCR', offense_key)
+  redis.call('EXPIRE', offense_key, abuse_window_seconds * 2)
+  local effective_lockout = lockout_seconds * math.min(offenses, 10)
+  redis.call('SET', lockout_key, '1', 'EX', effective_lockout)
+  return {0, effective_lockout}
 end
 
 return {0, retry_after}
@@ -369,11 +374,22 @@ export class RateLimitGuard implements CanActivate {
     identities: RateLimitIdentity[],
     route: string,
   ): boolean {
-    const policy: 'allow' | 'deny' =
-      this.reflector.getAllAndOverride<'allow' | 'deny'>('rate_limit_on_redis_error', [
-        context.getHandler(),
-        context.getClass(),
-      ]) ?? config.RATE_LIMIT_ON_REDIS_ERROR;
+    const isAuthRoute =
+      route.startsWith('/auth') ||
+      route.startsWith('auth') ||
+      route.includes('/auth/') ||
+      route.endsWith('/auth');
+
+    const routePolicy = this.reflector.getAllAndOverride<'allow' | 'deny'>('rate_limit_on_redis_error', [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    // /auth/* is hardcoded to deny on Redis outage as an essential security rule.
+    // Non-auth routes honor the route override if present, otherwise falling back to RATE_LIMIT_ON_REDIS_ERROR.
+    const policy: 'allow' | 'deny' = isAuthRoute
+      ? 'deny'
+      : (routePolicy ?? config.RATE_LIMIT_ON_REDIS_ERROR ?? 'allow');
 
     this.metrics?.increment('rate_limit_redis_error_total', { route, policy });
     this.logRedisError(error, identities, route, policy);
@@ -497,7 +513,10 @@ export class RateLimitGuard implements CanActivate {
     identity: string,
     route: string,
   ): { bucket: string; lockout: string; abuse: string } {
-    const tag = `${scope}:${identity}:${route}`;
+    const network = (config.STELLAR_NETWORK || 'testnet').toLowerCase();
+    const tag = scope === 'wallet'
+      ? `${scope}:${network}:${identity}:${route}`
+      : `${scope}:${identity}:${route}`;
     return {
       bucket: `ratelimit:{${tag}}:bucket`,
       lockout: `ratelimit:{${tag}}:lockout`,

@@ -425,6 +425,23 @@ exports[`OpenAPI document matches the checked-in snapshot 1`] = `
         ],
         "type": "object",
       },
+      "MarkMigrationAppliedDto": {
+        "properties": {
+          "justification": {
+            "description": "Alternative field for justification / audit note",
+            "type": "string",
+          },
+          "reason": {
+            "description": "Mandatory justification / audit note explaining why this migration was applied out-of-band",
+            "example": "Applied manually via psql console during incident INC-1234",
+            "type": "string",
+          },
+        },
+        "required": [
+          "reason",
+        ],
+        "type": "object",
+      },
       "MigrationDefinitionResponseDto": {
         "properties": {
           "description": {
@@ -446,6 +463,10 @@ exports[`OpenAPI document matches the checked-in snapshot 1`] = `
       },
       "MigrationRunResponseDto": {
         "properties": {
+          "auditNote": {
+            "description": "Audit note provided when a migration is marked applied manually",
+            "type": "string",
+          },
           "completedAt": {
             "type": "string",
           },
@@ -516,6 +537,10 @@ exports[`OpenAPI document matches the checked-in snapshot 1`] = `
       },
       "MigrationStepRecordDto": {
         "properties": {
+          "auditNote": {
+            "description": "Audit note provided when a migration is marked applied manually",
+            "type": "string",
+          },
           "completedAt": {
             "type": "string",
           },
@@ -1237,6 +1262,24 @@ exports[`OpenAPI document matches the checked-in snapshot 1`] = `
       "get": {
         "operationId": "DeliverableController_findByGig",
         "parameters": [
+          {
+            "description": "Page number (1-indexed). Defaults to 1.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "number",
+            },
+          },
+          {
+            "description": "Results per page, up to 100. Defaults to 20.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "number",
+            },
+          },
           {
             "in": "path",
             "name": "gigId",
@@ -3173,6 +3216,66 @@ exports[`OpenAPI document matches the checked-in snapshot 1`] = `
           },
         ],
         "summary": "Manually roll back a completed or failed migration run",
+        "tags": [
+          "Schema Migrations",
+        ],
+      },
+    },
+    "/migrations/{name}/mark-applied": {
+      "post": {
+        "description": "Records an out-of-band schema change in the migration registry with a mandatory audit note, preventing the runner from attempting a redundant double-apply.",
+        "operationId": "MigrationController_markApplied",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "example": "gigs-add-priority-column",
+              "type": "string",
+            },
+          },
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkMigrationAppliedDto",
+              },
+            },
+          },
+          "required": true,
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MigrationRunResponseDto",
+                },
+              },
+            },
+            "description": "",
+          },
+          "400": {
+            "description": "Missing or invalid justification note",
+          },
+          "403": {
+            "description": "Caller is authenticated but not an admin address",
+          },
+          "404": {
+            "description": "Migration not registered",
+          },
+          "409": {
+            "description": "Migration already has an active run",
+          },
+        },
+        "security": [
+          {
+            "JWT-auth": [],
+          },
+        ],
+        "summary": "Mark a migration as applied out-of-band",
         "tags": [
           "Schema Migrations",
         ],

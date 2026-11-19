@@ -3,14 +3,40 @@ import { HealthService } from './health.service';
 import { HealthCheckService } from '@nestjs/terminus';
 import { DatabaseService } from '../common/database/database.service';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
+import { validateEnv } from '../config/env.config';
+
+// checkSorobanRpcIndicator() reads config.STELLAR_HORIZON_URL, which requires validateEnv()
+// to have run first — normally done once in main.ts (see health.service.spec.ts).
+validateEnv();
 
 describe('HealthService with Terminus', () => {
   let service: HealthService;
   let mockHealthCheckService: Partial<HealthCheckService>;
   let mockDatabase: Partial<DatabaseService>;
   let mockRedis: any;
+  const originalFetch = global.fetch;
+  const originalMemoryUsage = process.memoryUsage;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    process.memoryUsage = originalMemoryUsage;
+  });
 
   beforeEach(async () => {
+    // checkStellar()/checkSorobanRpcIndicator() hit the network otherwise — pin it healthy so
+    // this suite isn't flaky on outbound connectivity (see health.service.spec.ts).
+    global.fetch = jest.fn().mockResolvedValue({ ok: true }) as any;
+    // checkMemory() reads real process heap usage, which this suite running alongside many
+    // other test files shouldn't depend on — pin it well under the 500MB threshold (see
+    // health.service.spec.ts).
+    process.memoryUsage = jest.fn().mockReturnValue({
+      heapUsed: 50 * 1024 * 1024,
+      heapTotal: 100 * 1024 * 1024,
+      rss: 100 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0,
+    }) as any;
+
     mockHealthCheckService = {
       check: jest.fn().mockResolvedValue({
         status: 'ok',

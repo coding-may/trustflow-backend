@@ -17,6 +17,8 @@ export interface SorobanEvent {
   value: Record<string, unknown>;
   xdr: string;
   createdAt: Date;
+  /** Transaction hash, when the RPC response exposes it. */
+  txHash?: string;
 }
 
 export interface ProcessedEvent {
@@ -27,6 +29,36 @@ export interface ProcessedEvent {
   processedAt: Date;
   // Store original event data for retry
   originalEvent?: SorobanEvent;
+  /**
+   * Identity of the individual event that failed within a batch. A batch-level
+   * ledger range is not enough to locate the offending event — operators need
+   * the transaction hash and event index to reprocess a single event.
+   */
+  txHash?: string;
+  eventIndex?: number;
+}
+
+/** Counter of events actually applied to the read model — one increment per successful event. */
+export const EVENTS_INGESTED_TOTAL = 'events_ingested_total';
+/** Counter of events that failed and were written to dead-letter — one increment per failed event. */
+export const EVENTS_DEAD_LETTERED_TOTAL = 'events_dead_lettered_total';
+
+/**
+ * Derive the transaction hash and event index of a Soroban event for dead-letter records.
+ *
+ * RPC responses sometimes expose `txHash` directly; otherwise it is encoded in the event id
+ * (`<ledger>-<txIndex>-<eventIndex>`, each group hex-encoded). Returning both lets operators
+ * pinpoint the exact event inside a failed batch instead of bisecting the whole batch.
+ */
+export function getEventIdentity(event: SorobanEvent): { txHash?: string; eventIndex?: number } {
+  const segments = event.id?.split('-') ?? [];
+  const last = segments[segments.length - 1];
+  const parsedIndex = last === undefined ? NaN : Number.parseInt(last, 16);
+
+  return {
+    txHash: event.txHash ?? (segments.length > 1 ? segments.slice(0, -1).join('-') : undefined),
+    eventIndex: Number.isFinite(parsedIndex) ? parsedIndex : undefined,
+  };
 }
 
 const EVENT_KEY_PREFIX = 'processed-event:';
@@ -90,9 +122,12 @@ export class EventProcessorService implements OnModuleInit {
       };
 
       await this.persist(result);
+      // Count the event, not the batch: a batch is "ingested" only if every event in it was.
+      this.metrics?.increment(EVENTS_INGESTED_TOTAL, { event_type: event.eventType });
       this.logger.log(`Event ${eventId} processed successfully`);
       return result;
     } catch (error) {
+      const identity = getEventIdentity(event);
       const result: ProcessedEvent = {
         eventId,
         ledger: event.ledger,
@@ -100,10 +135,15 @@ export class EventProcessorService implements OnModuleInit {
         error: error instanceof Error ? error.message : 'Unknown error',
         processedAt: new Date(),
         originalEvent: event,
+        ...identity,
       };
 
       await this.persist(result);
-      this.logger.error(`Event ${eventId} failed: ${result.error}`);
+      this.metrics?.increment(EVENTS_DEAD_LETTERED_TOTAL, { event_type: event.eventType });
+      this.logger.error(
+        `Event ${eventId} failed (tx=${identity.txHash ?? 'unknown'}, ` +
+          `eventIndex=${identity.eventIndex ?? 'unknown'}): ${result.error}`,
+      );
       return result;
     }
   }
@@ -184,7 +224,7 @@ export class EventProcessorService implements OnModuleInit {
   }
 
   private getContractEscrowId(event: SorobanEvent): string {
-    const value = event.value as Record<string, unknown>;
+    const value = event.value;
     const candidate = value.contractEscrowId ?? value.escrowId ?? event.topic[1] ?? event.id;
     if (typeof candidate !== 'string' || candidate.trim() === '') {
       throw new Error(`Missing contract escrow id for ${event.eventType} event ${event.id}`);

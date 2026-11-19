@@ -21,6 +21,15 @@ export interface JurorVote {
   castAt: string;
 }
 
+/** A single piece of evidence attached to a dispute, pinned to IPFS. */
+export interface DisputeEvidence {
+  cid: string;
+  size: number;
+  filename?: string;
+  submittedBy: string;
+  submittedAt: string;
+}
+
 export interface SagaStepRecord {
   step: DisputeStep;
   startedAt: string;
@@ -49,7 +58,8 @@ export interface DisputeSaga {
   votes?: JurorVote[];
   verdict?: DisputeVerdict;
   payoutTxHash?: string;
-  arweaveTxId?: string;
+  /** Evidence packages pinned during the dispute, in submission order. */
+  evidence?: DisputeEvidence[];
   stepHistory: SagaStepRecord[];
   createdAt: string;
   updatedAt: string;

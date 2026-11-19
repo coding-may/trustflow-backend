@@ -10,6 +10,7 @@ import { SorobanMetricsService } from './soroban-metrics.service';
 import { SorobanRpcMetricsInterceptor } from './soroban-rpc-metrics.interceptor';
 import { TracingService } from './tracing.service';
 import { DatabaseQueryLoggerService } from './database-query-logger.service';
+import { IngestionHealthService } from './ingestion-health.service';
 
 @Global()
 @Module({
@@ -24,6 +25,7 @@ import { DatabaseQueryLoggerService } from './database-query-logger.service';
     SorobanRpcMetricsInterceptor,
     TracingService,
     DatabaseQueryLoggerService,
+    IngestionHealthService,
   ],
   exports: [
     HealthService,
@@ -34,6 +36,7 @@ import { DatabaseQueryLoggerService } from './database-query-logger.service';
     SorobanRpcMetricsInterceptor,
     TracingService,
     DatabaseQueryLoggerService,
+    IngestionHealthService,
   ],
 })
 export class MonitoringModule {}

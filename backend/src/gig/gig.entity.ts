@@ -10,6 +10,18 @@ export enum GigStatus {
   CANCELLED = 'cancelled',
 }
 
+/** Predefined categories for classifying gig solicitations. */
+export enum GigCategory {
+  DEVELOPMENT = 'development',
+  DESIGN = 'design',
+  MARKETING = 'marketing',
+  WRITING = 'writing',
+  AUDIT = 'audit',
+  TRANSLATION = 'translation',
+  CONSULTING = 'consulting',
+  OTHER = 'other',
+}
+
 export interface Gig {
   id: string;
   creator: string;
@@ -24,6 +36,8 @@ export interface Gig {
   expiredAt?: string;
   cancelledAt?: string;
   version: number;
+  escrowId?: string;
+  reservationId?: string;
 }
 
 /** Webhook events emitted by the gig service and expiry sweep worker. */
@@ -32,6 +46,7 @@ export const GIG_EVENTS = {
   GIG_ACCEPTED: 'gig.accepted',
   GIG_EXPIRED: 'gig.expired',
   GIG_CANCELLED: 'gig.cancelled',
+  GIG_CANCELLED_ACCEPTED: 'gig.cancelled_accepted',
 } as const;
 
 export const DEFAULT_RESPONSE_WINDOW_HOURS = 72;

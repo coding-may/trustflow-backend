@@ -7,6 +7,7 @@ import {
   OnModuleInit,
   ForbiddenException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
 import { AuditService } from '../audit/audit.service';
@@ -14,13 +15,20 @@ import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { MetricsService } from '../monitoring/metrics.service';
 import {
+  DisputeEvidence,
   DisputeSaga,
   DisputeStep,
   DisputeVerdict,
   JurorVote,
   SagaStepRecord,
 } from './dispute.types';
-import { EscalateDisputeDto, AssignJurorsDto, CastVoteDto, ExecutePayoutDto } from './dispute.dto';
+import {
+  EscalateDisputeDto,
+  AssignJurorsDto,
+  CastVoteDto,
+  ExecutePayoutDto,
+  SubmitEvidenceDto,
+} from './dispute.dto';
 import { Escrow, EscrowService } from '../escrow/escrow.service';
 import { WebhookService } from '../webhook/webhook.service';
 import { DiscordService } from '../webhook/discord.service';
@@ -29,6 +37,7 @@ import { ArweaveArchiveService } from './arweave-archive.service';
 import { config } from '../config/env.config';
 import { getCurrentUtcDate, toUtcIsoString } from '../common/dates';
 import { EscrowChainStateClient } from '../escrow-reconciliation/escrow-chain-state.client';
+import { DISPUTE_EVIDENCE_PINNER, DisputeEvidencePinner } from './dispute-evidence.pinner';
 
 /** Simple keyed mutex for serializing concurrent operations. */
 class KeyedMutex {
@@ -125,6 +134,9 @@ export class DisputeSagaService implements OnModuleInit {
     @Optional() private readonly audit?: AuditService,
     @Optional() private readonly discordService?: DiscordService,
     @Optional() private readonly chainClient?: EscrowChainStateClient,
+    @Inject(DISPUTE_EVIDENCE_PINNER)
+    @Optional()
+    private readonly evidencePinner?: DisputeEvidencePinner,
   ) {}
 
   onModuleInit(): void {
@@ -171,6 +183,45 @@ export class DisputeSagaService implements OnModuleInit {
     }
 
     return [...this.sagas.values()];
+  }
+
+  /**
+   * Attach a piece of evidence to a dispute by pinning it to IPFS and recording the
+   * resulting CID on the saga. Size validation happens in `SubmitEvidenceDto` (the same
+   * shared base64 limit as deliverable uploads) and again inside `pinContent`, so an
+   * oversized payload is rejected before any decoding or provider call.
+   */
+  async attachEvidence(
+    sagaId: string,
+    dto: SubmitEvidenceDto,
+    submittedBy: string,
+  ): Promise<DisputeEvidence> {
+    if (!this.evidencePinner) {
+      throw new ServiceUnavailableException('Evidence storage is not configured');
+    }
+    // Resolve first so an unknown saga never reaches pinning storage.
+    await this.findById(sagaId);
+
+    const pin = await this.evidencePinner.pinContent({
+      content: dto.content,
+      filename: dto.filename,
+    });
+    const evidence: DisputeEvidence = {
+      cid: pin.cid,
+      size: pin.size,
+      filename: dto.filename,
+      submittedBy,
+      submittedAt: toUtcIsoString(getCurrentUtcDate()),
+    };
+
+    await this.sagaMutex.lock(sagaId, async () => {
+      const saga = await this.findById(sagaId);
+      saga.evidence = [...(saga.evidence ?? []), evidence];
+      await this.persistSaga(saga);
+    });
+
+    this.metrics.increment('dispute_evidence_submitted_total');
+    return evidence;
   }
 
   // ─── Step 1: Escalation ───────────────────────────────────────────

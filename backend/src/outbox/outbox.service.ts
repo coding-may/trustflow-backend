@@ -1,5 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { SanitizedLogger } from '../common/logging/sanitized-logger';
+import { CorrelationIdStore } from '../common/logging/correlation-id.store';
+import { requestContextStorage } from '../common/logging/request-context';
 import { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { MetricsService } from '../monitoring/metrics.service';
@@ -82,7 +84,18 @@ export class OutboxService {
    * Builds a new OutboxEvent but does NOT persist it yet — callers must follow
    * up with `append()` or `appendToTransaction()`.
    */
-  create(type: string, aggregateType: string, aggregateId: string, payload: unknown): OutboxEvent {
+  create(
+    type: string,
+    aggregateType: string,
+    aggregateId: string,
+    payload: unknown,
+    correlationId?: string,
+  ): OutboxEvent {
+    const resolvedCorrelationId =
+      correlationId ??
+      this.correlationIdStore?.get() ??
+      requestContextStorage.getStore()?.requestId;
+
     return {
       id: randomUUID(),
       dedupKey: `${type}:${aggregateType}:${aggregateId}:${Date.now()}`,
@@ -94,6 +107,7 @@ export class OutboxService {
       attempts: 0,
       nextAttemptAt: Date.now(),
       createdAt: new Date().toISOString(),
+      correlationId: resolvedCorrelationId,
     };
   }
 
@@ -223,6 +237,38 @@ export class OutboxService {
     this.memory.set(event.id, updated);
     this.processing.delete(event.id);
     this.pending.delete(event.id);
+  }
+
+  /**
+   * Purges delivered events older than `maxAgeSeconds`, measuring age from `deliveredAt`
+   * rather than `createdAt` — a message that sat pending for a long time before finally
+   * delivering still gets the full retention window counted from delivery, not creation
+   * (#988).
+   *
+   * Only the in-memory fallback needs this sweep: the Redis-backed path already retires a
+   * delivered event's body via a TTL set in `markDelivered()` at the moment of delivery
+   * (`config.OUTBOX_DELIVERED_TTL_SECONDS`), which is inherently delivered-time-based and
+   * never consults `createdAt`.
+   */
+  async purgeDeliveredOutboxMessages(
+    maxAgeSeconds: number = config.OUTBOX_DELIVERED_TTL_SECONDS,
+  ): Promise<number> {
+    if (this.redis || maxAgeSeconds <= 0) return 0;
+
+    const cutoff = Date.now() - maxAgeSeconds * 1000;
+    let purged = 0;
+    for (const [id, event] of this.memory.entries()) {
+      if (event.status !== 'delivered' || !event.deliveredAt) continue;
+      if (new Date(event.deliveredAt).getTime() >= cutoff) continue;
+
+      this.memory.delete(id);
+      purged++;
+    }
+
+    if (purged > 0) {
+      this.logger.log(`purgeDeliveredOutboxMessages: purged ${purged} delivered event(s)`);
+    }
+    return purged;
   }
 
   /**

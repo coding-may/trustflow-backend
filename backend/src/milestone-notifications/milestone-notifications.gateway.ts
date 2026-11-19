@@ -23,13 +23,21 @@ const ROOM_PREFIX = 'gig:';
 
 export interface SubscriptionAck {
   event: 'subscribed' | 'unsubscribed' | 'error';
-  data: { gigId?: string; error?: string };
+  data: { gigId?: string; error?: string; backfilled?: number; resumeToken?: string };
 }
 
 export interface ClientEventPayload {
   v: number;
   type: string;
   data: unknown;
+  eventId?: string;
+}
+
+interface StoredMilestoneEvent {
+  eventId: string;
+  type: string;
+  data: unknown;
+  timestamp: number;
 }
 
 /*
@@ -47,6 +55,10 @@ export class MilestoneNotificationsGateway
   /** Live client sockets, so a drain can notify and close them rather than just vanishing. */
   private readonly clients = new Map<string, Socket>();
   private draining = false;
+  /** In-memory sliding buffer of recent events per gig for reconnection catch-up (#930). */
+  private readonly recentEvents = new Map<string, StoredMilestoneEvent[]>();
+  private static readonly MAX_RECENT_EVENTS = 50;
+
   /**
    * Serialises outbox message handling.
    *
@@ -179,7 +191,7 @@ export class MilestoneNotificationsGateway
     }
 
     if (event.type.startsWith('gig.')) {
-      this.emitMilestoneUpdate(event.aggregateId, event.type, event.payload);
+      await this.emitMilestoneUpdate(event.aggregateId, event.type, event.payload, eventKey, true);
     } else if (event.type.startsWith('deliverable.')) {
       this.emitDeliverableUploaded(event.aggregateId, event.type, event.payload);
     }
@@ -249,7 +261,45 @@ export class MilestoneNotificationsGateway
     this.logger.debug(
       `Client ${client.id} joined ${room} (connections=${stats.connections}, rooms=${stats.rooms})`,
     );
-    return { event: 'subscribed', data: { gigId } };
+
+    // Replay missed events if client provided a resume token or lastEventId (#930)
+    let backfilled = 0;
+    const resumeToken = this.parseResumeToken(data);
+    if (resumeToken) {
+      const history = this.recentEvents.get(gigId) || [];
+      const sinceIdx = history.findIndex(e => e.eventId === resumeToken);
+      const missed = sinceIdx >= 0 ? history.slice(sinceIdx + 1) : history;
+      for (const item of missed) {
+        const payload: ClientEventPayload = {
+          v: 1,
+          type: item.type,
+          data: item.data,
+          eventId: item.eventId,
+        };
+        client.emit('milestone:update', payload);
+        backfilled++;
+      }
+    }
+
+    const history = this.recentEvents.get(gigId);
+    const latestToken = history && history.length > 0 ? history[history.length - 1].eventId : undefined;
+
+    return {
+      event: 'subscribed',
+      data: {
+        gigId,
+        ...(backfilled > 0 ? { backfilled } : {}),
+        ...(latestToken ? { resumeToken: latestToken } : {}),
+      },
+    };
+  }
+
+  private parseResumeToken(data: unknown): string | null {
+    if (typeof data !== 'object' || data === null) return null;
+    const token =
+      (data as { resumeToken?: unknown; lastEventId?: unknown }).resumeToken ||
+      (data as { resumeToken?: unknown; lastEventId?: unknown }).lastEventId;
+    return typeof token === 'string' && token.trim() ? token.trim() : null;
   }
 
   @SubscribeMessage('unsubscribe:gig')
@@ -283,9 +333,41 @@ export class MilestoneNotificationsGateway
     return { event: 'error', data: gigId ? { gigId, error } : { error } };
   }
 
-  emitMilestoneUpdate(gigId: string, type: string, data: unknown) {
+  async emitMilestoneUpdate(
+    gigId: string,
+    type: string,
+    data: unknown,
+    eventId?: string,
+    isOutboxRelay = false,
+  ): Promise<void> {
     if (this.draining) return;
-    const payload: ClientEventPayload = { v: 1, type, data };
+
+    // Deduplicate against already-broadcast outbox / direct emits (#929)
+    if (eventId && !isOutboxRelay) {
+      const claimed = await this.dedup.claim(eventId);
+      if (!claimed) {
+        this.logger.debug(`Dropping duplicate direct milestone emit ${eventId}`);
+        return;
+      }
+    }
+
+    const payload: ClientEventPayload = {
+      v: 1,
+      type,
+      data,
+      ...(eventId ? { eventId } : {}),
+    };
+
+    // Store in recent events buffer for reconnection backfill (#930)
+    if (eventId) {
+      const history = this.recentEvents.get(gigId) || [];
+      history.push({ eventId, type, data, timestamp: Date.now() });
+      if (history.length > MilestoneNotificationsGateway.MAX_RECENT_EVENTS) {
+        history.shift();
+      }
+      this.recentEvents.set(gigId, history);
+    }
+
     this.server?.to(`gig:${gigId}`).emit('milestone:update', payload);
   }
 

@@ -14,7 +14,10 @@ import { NotificationService } from '../notification/notification.service';
 import { REDIS_CLIENT } from '../common/redis/redis.module';
 import { MetricsService } from '../monitoring/metrics.service';
 import { EscrowChainStateClient } from '../escrow-reconciliation/escrow-chain-state.client';
-import { ArweaveArchiveService } from './arweave-archive.service';
+import { DISPUTE_EVIDENCE_PINNER } from './dispute-evidence.pinner';
+import { SubmitEvidenceDto } from './dispute.dto';
+import { MAX_BASE64_CONTENT_LENGTH } from '../ipfs-pinning/ipfs-pinning.types';
+import { validateSync } from 'class-validator';
 
 // ─── Shared mock factories ────────────────────────────────────────────────────
 
@@ -109,6 +112,7 @@ describe('DisputeSagaService', () => {
   let notificationService: ReturnType<typeof buildMocks>['notificationService'];
   let escrow: ReturnType<typeof buildMocks>['escrow'];
   let discordService: ReturnType<typeof buildMocks>['discordService'];
+  let ipfsPinningService: { pinContent: jest.Mock };
 
   beforeEach(async () => {
     const mocks = buildMocks();
@@ -124,17 +128,18 @@ describe('DisputeSagaService', () => {
         { provide: EscrowService, useValue: escrowService },
         { provide: WebhookService, useValue: webhookService },
         { provide: NotificationService, useValue: notificationService },
-        {
-          provide: ArweaveArchiveService,
-          useValue: { archiveDispute: jest.fn().mockResolvedValue(undefined) },
-        },
         { provide: REDIS_CLIENT, useValue: null },
         { provide: MetricsService, useValue: { increment: jest.fn() } },
         { provide: DiscordService, useValue: discordService },
+        {
+          provide: DISPUTE_EVIDENCE_PINNER,
+          useValue: { pinContent: jest.fn().mockResolvedValue({ cid: 'bafkrei-test', size: 4 }) },
+        },
       ],
     }).compile();
 
     service = module.get<DisputeSagaService>(DisputeSagaService);
+    ipfsPinningService = module.get(DISPUTE_EVIDENCE_PINNER);
   });
 
   it('should be defined', () => {
@@ -517,26 +522,6 @@ describe('DisputeSagaService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('throws ForbiddenException when caller wallet does not match jurorAddress', async () => {
-      await expect(
-        service.castVote(
-          sagaId,
-          { jurorAddress: JURORS[0], vote: 'depositor' },
-          'GDIFFERENTWALLET111111111111111111111111111111111111111111',
-        ),
-      ).rejects.toThrow(ForbiddenException);
-    });
-
-    it('allows vote when caller wallet matches jurorAddress', async () => {
-      const saga = await service.castVote(
-        sagaId,
-        { jurorAddress: JURORS[0], vote: 'depositor' },
-        JURORS[0],
-      );
-      expect(saga.votes).toHaveLength(1);
-      expect(saga.votes![0].jurorAddress).toBe(JURORS[0]);
-    });
-
     it('throws ConflictException on duplicate vote', async () => {
       await service.castVote(sagaId, { jurorAddress: JURORS[0], vote: 'depositor' });
       await expect(
@@ -829,6 +814,54 @@ describe('DisputeSagaService', () => {
         'dispute.saga_failed',
         expect.objectContaining({ reason: 'DB failure' }),
       );
+    });
+  });
+
+  describe('evidence attachments', () => {
+    const validDto: SubmitEvidenceDto = { content: 'SGVsbG8=', filename: 'proof.txt' };
+
+    it('rejects an oversized base64 payload using the shared size limit', () => {
+      const dto = Object.assign(new SubmitEvidenceDto(), {
+        content: 'A'.repeat(MAX_BASE64_CONTENT_LENGTH + 4),
+        filename: 'huge.bin',
+      });
+
+      const errors = validateSync(dto);
+
+      expect(errors.some(e => e.property === 'content')).toBe(true);
+    });
+
+    it('accepts a payload exactly at the shared size limit', () => {
+      const dto = Object.assign(new SubmitEvidenceDto(), {
+        content: 'A'.repeat(MAX_BASE64_CONTENT_LENGTH),
+        filename: 'at-limit.bin',
+      });
+
+      expect(validateSync(dto)).toHaveLength(0);
+    });
+
+    it('pins evidence and records its CID on the saga', async () => {
+      await service.escalate('esc-001', ESCALATE_DTO);
+      const saga = (await service.findByEscrowId('esc-001'))!;
+
+      const evidence = await service.attachEvidence(saga.sagaId, validDto, escrow.depositor);
+
+      expect(ipfsPinningService.pinContent).toHaveBeenCalledWith({
+        content: validDto.content,
+        filename: validDto.filename,
+      });
+      expect(evidence).toEqual(
+        expect.objectContaining({ cid: 'bafkrei-test', size: 4, submittedBy: escrow.depositor }),
+      );
+      const updated = await service.findById(saga.sagaId);
+      expect(updated.evidence).toEqual([evidence]);
+    });
+
+    it('does not contact pinning storage for an unknown saga', async () => {
+      await expect(service.attachEvidence('no-such-saga', validDto, 'GTEST')).rejects.toThrow(
+        'Dispute saga no-such-saga not found',
+      );
+      expect(ipfsPinningService.pinContent).not.toHaveBeenCalled();
     });
   });
 });

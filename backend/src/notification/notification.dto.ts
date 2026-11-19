@@ -5,6 +5,7 @@ export const NotificationPreferenceSchema = z.object({
   pushEnabled: z.boolean().default(true),
   disputeAlerts: z.boolean().default(true),
   evidenceReminders: z.boolean().default(true),
+  milestoneNotifications: z.boolean().default(true),
 });
 
 export type NotificationPreferenceDto = z.infer<typeof NotificationPreferenceSchema>;
@@ -14,6 +15,7 @@ export const UpdatePreferenceSchema = z.object({
   pushEnabled: z.boolean().optional(),
   disputeAlerts: z.boolean().optional(),
   evidenceReminders: z.boolean().optional(),
+  milestoneNotifications: z.boolean().optional(),
 });
 
 export type UpdatePreferenceDto = z.infer<typeof UpdatePreferenceSchema>;

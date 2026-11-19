@@ -20,6 +20,33 @@ export interface ReputationEventLogEntry {
   counterparty: string;
   contribution: number;
   occurredAt: string;
+  /** Base weight for `type` before amount scaling/dampening — see REPUTATION_WEIGHTS. */
+  baseWeight: number;
+  /** sqrt(amountXLM) scaling factor, capped at REPUTATION_MAX_AMOUNT_WEIGHT. */
+  amountWeight: number;
+  /** Sybil dampening applied for repeated interactions with this counterparty (1 / (1 + priorInteractions)). */
+  dampeningFactor: number;
+}
+
+/**
+ * `ReputationEventLogEntry` plus how much of this single event's contribution remains after
+ * decaying it from its own `occurredAt` to "now" — for transparency/audit purposes only
+ * (#989). The materialized score itself is never decayed per event; it decays as one
+ * aggregate from `lastUpdatedAt` (see the `decay()` doc comment on `ReputationService`), so
+ * this is an illustrative approximation of "how much this event still counts for", not a
+ * stored ledger value, and the sum of `decayedContribution` across events will not exactly
+ * equal the current `score`.
+ */
+export interface ReputationBreakdownEntry extends ReputationEventLogEntry {
+  decayedContribution: number;
+}
+
+export interface ReputationScoreBreakdown {
+  address: string;
+  score: number;
+  eventCount: number;
+  lastUpdatedAt: string;
+  events: ReputationBreakdownEntry[];
 }
 
 /** Materialized, incrementally-updated score record for a single address. */
