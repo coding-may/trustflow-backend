@@ -211,10 +211,13 @@ export class IpfsPinningService implements OnModuleInit {
           },
         );
 
-        // Verify the pin was successful
+        // Verify the pin was successful. #878: some providers process pins
+        // asynchronously, so a verify() that returns false (pin not visible yet)
+        // is retried a few times with a short delay before being treated as a
+        // permanent failure.
         const verified = await this.circuitBreakerService.execute(
           `ipfs-verify-${providerName}`,
-          async () => provider.verify(record.cid),
+          async () => this.verifyWithGracePeriod(provider, record.cid),
           {
             name: `ipfs-verify-${providerName}`,
             timeout: 30000,
@@ -252,8 +255,12 @@ export class IpfsPinningService implements OnModuleInit {
           );
         }
 
+        // #876: a 429 rate-limit response from a provider is explicitly treated as
+        // a failover-eligible error (same as 5xx or network failure), so the next
+        // provider in the priority chain is tried. The dedicated RateLimitError
+        // class makes this distinguishable in logs and metrics.
         this.logger.warn(
-          `Provider ${providerName} failed to pin ${record.cid}: ${errMsg} — failing over`,
+          `Provider ${providerName} failed to pin ${record.cid}: ${errMsg} — failing over to next provider`,
         );
 
         // Continue to next provider in sequence
@@ -423,6 +430,29 @@ export class IpfsPinningService implements OnModuleInit {
   }
 
   // ─── Internal helpers ─────────────────────────────────────────────
+
+  /**
+   * #878: Some providers process pins asynchronously and may return a 404 (or
+   * equivalently, `verify() === false`) shortly after `pin()` returns, before
+   * the async pin job completes. Rather than immediately marking the pin as
+   * FAILED, retry a few times with a short delay. If the pin still doesn't
+   * appear after the grace period, treat it as a genuine failure.
+   */
+  private static readonly VERIFY_GRACE_PERIOD_RETRIES = 3;
+  private static readonly VERIFY_GRACE_PERIOD_DELAY_MS = 2_000;
+
+  private async verifyWithGracePeriod(provider: IpfsPinProvider, cid: string): Promise<boolean> {
+    for (let i = 0; i <= IpfsPinningService.VERIFY_GRACE_PERIOD_RETRIES; i++) {
+      const result = await provider.verify(cid);
+      if (result) return true;
+      if (i < IpfsPinningService.VERIFY_GRACE_PERIOD_RETRIES) {
+        await new Promise(resolve =>
+          setTimeout(resolve, IpfsPinningService.VERIFY_GRACE_PERIOD_DELAY_MS),
+        );
+      }
+    }
+    return false;
+  }
 
   /** Attempts to pin `content` to enough not-yet-healthy providers to reach the replication factor. */
   private async replicate(record: PinRecord, content?: Buffer): Promise<void> {

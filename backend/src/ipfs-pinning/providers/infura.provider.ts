@@ -4,6 +4,7 @@ import { BaseHttpPinProvider } from './base-http-pin.provider';
 import { PinProviderName } from './ipfs-provider.interface';
 import { buildSingleFileMultipart } from './multipart.util';
 import { config } from '../../config/env.config';
+import { RateLimitError } from './rate-limit-error';
 
 const INFURA_IPFS_HOST = 'ipfs.infura.io';
 const INFURA_IPFS_PORT = 5001;
@@ -63,6 +64,12 @@ export class InfuraProvider extends BaseHttpPinProvider {
     }
   }
 
+  private parseRetryAfter(header: string | string[] | undefined): number | undefined {
+    if (!header || Array.isArray(header)) return undefined;
+    const seconds = parseInt(header, 10);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
   private request<T = void>(
     credential: string,
     options: {
@@ -86,7 +93,16 @@ export class InfuraProvider extends BaseHttpPinProvider {
           const chunks: Buffer[] = [];
           res.on('data', chunk => chunks.push(chunk));
           res.on('end', () => {
-            if (!res.statusCode || res.statusCode >= 400) {
+            if (!res.statusCode) {
+              reject(new Error('Infura request returned no status code'));
+              return;
+            }
+            if (res.statusCode === 429) {
+              const retryAfter = this.parseRetryAfter(res.headers['retry-after']);
+              reject(new RateLimitError('Infura', retryAfter));
+              return;
+            }
+            if (res.statusCode >= 400) {
               reject(new Error(`Infura request failed with status ${res.statusCode}`));
               return;
             }

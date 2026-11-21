@@ -3,6 +3,7 @@ import * as https from 'https';
 import { BaseHttpPinProvider } from './base-http-pin.provider';
 import { PinProviderName } from './ipfs-provider.interface';
 import { config } from '../../config/env.config';
+import { RateLimitError } from './rate-limit-error';
 
 const WEB3_STORAGE_API_HOST = 'api.web3.storage';
 
@@ -60,6 +61,12 @@ export class Web3StorageProvider extends BaseHttpPinProvider {
     }
   }
 
+  private parseRetryAfter(header: string | string[] | undefined): number | undefined {
+    if (!header || Array.isArray(header)) return undefined;
+    const seconds = parseInt(header, 10);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
   private request<T = void>(options: {
     path: string;
     method: string;
@@ -78,7 +85,16 @@ export class Web3StorageProvider extends BaseHttpPinProvider {
           const chunks: Buffer[] = [];
           res.on('data', chunk => chunks.push(chunk));
           res.on('end', () => {
-            if (!res.statusCode || res.statusCode >= 400) {
+            if (!res.statusCode) {
+              reject(new Error('web3.storage request returned no status code'));
+              return;
+            }
+            if (res.statusCode === 429) {
+              const retryAfter = this.parseRetryAfter(res.headers['retry-after']);
+              reject(new RateLimitError('web3.storage', retryAfter));
+              return;
+            }
+            if (res.statusCode >= 400) {
               reject(new Error(`web3.storage request failed with status ${res.statusCode}`));
               return;
             }

@@ -4,6 +4,7 @@ import { BaseHttpPinProvider } from './base-http-pin.provider';
 import { PinProviderName } from './ipfs-provider.interface';
 import { buildSingleFileMultipart } from './multipart.util';
 import { config } from '../../config/env.config';
+import { RateLimitError } from './rate-limit-error';
 
 const PINATA_API_HOST = 'api.pinata.cloud';
 
@@ -64,6 +65,12 @@ export class PinataProvider extends BaseHttpPinProvider {
     return response.rows.length > 0;
   }
 
+  private parseRetryAfter(header: string | string[] | undefined): number | undefined {
+    if (!header || Array.isArray(header)) return undefined;
+    const seconds = parseInt(header, 10);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  }
+
   private request<T = void>(options: {
     hostname: string;
     path: string;
@@ -85,7 +92,16 @@ export class PinataProvider extends BaseHttpPinProvider {
           const chunks: Buffer[] = [];
           res.on('data', chunk => chunks.push(chunk));
           res.on('end', () => {
-            if (!res.statusCode || res.statusCode >= 400) {
+            if (!res.statusCode) {
+              reject(new Error('Pinata request returned no status code'));
+              return;
+            }
+            if (res.statusCode === 429) {
+              const retryAfter = this.parseRetryAfter(res.headers['retry-after']);
+              reject(new RateLimitError('Pinata', retryAfter));
+              return;
+            }
+            if (res.statusCode >= 400) {
               reject(new Error(`Pinata request failed with status ${res.statusCode}`));
               return;
             }

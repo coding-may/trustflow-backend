@@ -8,6 +8,7 @@ import { computeCidV1Raw } from './cid.util';
 import { IPFS_EVENTS, PinRedundancy, PinStatus, ProviderPinStatus } from './ipfs-pinning.types';
 import { IpfsPinProvider, PinProviderName } from './providers/ipfs-provider.interface';
 import { CircuitBreakerService } from '../common/circuit-breaker';
+import { RateLimitError } from './providers/rate-limit-error';
 
 function makeProvider(name: PinProviderName): jest.Mocked<IpfsPinProvider> {
   return {
@@ -160,6 +161,68 @@ describe('IpfsPinningService', () => {
       expect(pinata.pin).toHaveBeenCalled();
       expect(web3Storage.pin).toHaveBeenCalled();
       expect(infura.pin).toHaveBeenCalled();
+    });
+
+    // #876: a 429 from the primary provider must trigger failover to the next
+    // provider, same as a 5xx would — not be treated as a terminal failure.
+    it('fails over to the next provider when the primary returns 429', async () => {
+      pinata.pin.mockRejectedValue(new RateLimitError('Pinata', 60));
+
+      const record = await service.pinContent({ content: CONTENT });
+
+      expect(record.status).toBe(PinStatus.HEALTHY);
+      const pinataEntry = record.providers.find(p => p.provider === PinProviderName.PINATA);
+      expect(pinataEntry?.status).toBe(ProviderPinStatus.FAILED);
+      expect(pinataEntry?.lastError).toContain('429');
+      // The fallback providers must have been attempted
+      expect(infura.pin).toHaveBeenCalled();
+      expect(web3Storage.pin).toHaveBeenCalled();
+    });
+
+    it('fails over when every provider returns 429', async () => {
+      pinata.pin.mockRejectedValue(new RateLimitError('Pinata'));
+      infura.pin.mockRejectedValue(new RateLimitError('Infura'));
+      web3Storage.pin.mockRejectedValue(new RateLimitError('web3.storage'));
+
+      await expect(service.pinContent({ content: CONTENT })).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+      expect(webhookService.dispatch).toHaveBeenCalledWith(
+        IPFS_EVENTS.PIN_FAILED,
+        expect.objectContaining({ cid: CID }),
+      );
+    });
+
+    // #878: a verify() that returns false (simulating a not-yet-visible pin)
+    // must not immediately mark the pin as FAILED. It should be retried within
+    // a grace period before concluding the pin is lost.
+    it('retries verify() a few times before marking a pin as failed on false', async () => {
+      // Simulate async pin: first verify() returns false, second returns true
+      pinata.verify.mockResolvedValueOnce(false).mockResolvedValue(true);
+      infura.verify.mockResolvedValue(true);
+      web3Storage.verify.mockResolvedValue(true);
+
+      const record = await service.pinContent({ content: CONTENT });
+
+      const pinataEntry = record.providers.find(p => p.provider === PinProviderName.PINATA);
+      expect(pinataEntry?.status).toBe(ProviderPinStatus.PINNED);
+      expect(pinata.verify).toHaveBeenCalledTimes(2);
+      expect(record.status).toBe(PinStatus.HEALTHY);
+    });
+
+    it('marks a pin as failed when verify() keeps returning false after grace period', async () => {
+      pinata.verify.mockResolvedValue(false);
+      infura.verify.mockResolvedValue(true);
+      web3Storage.verify.mockResolvedValue(true);
+
+      const record = await service.pinContent({ content: CONTENT });
+
+      const pinataEntry = record.providers.find(p => p.provider === PinProviderName.PINATA);
+      expect(pinataEntry?.status).toBe(ProviderPinStatus.FAILED);
+      // verify was called 4 times: initial + 3 grace-period retries
+      expect(pinata.verify).toHaveBeenCalledTimes(4);
+      // Still healthy via other providers
+      expect(record.status).toBe(PinStatus.HEALTHY);
     });
   });
 
