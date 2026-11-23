@@ -50,6 +50,10 @@ import {
   toPublicProfilePage,
 } from './user-profile.mapper';
 import { OWNER_PROFILE_SCHEMA, PUBLIC_PROFILE_SCHEMA } from './user-profile.swagger';
+import {
+  calculateProfileCompleteness,
+  getProfileCompletenessBreakdown,
+} from './profile-completeness.util';
 
 /**
  * Shape of `req.user` once `JwtAuthGuard` has run — see
@@ -181,6 +185,110 @@ export class UserProfileController {
   @ApiResponse({ status: 404, description: 'The authenticated wallet has no profile yet' })
   async findMine(@Req() req: AuthenticatedRequest) {
     return toOwnerProfile(await this.userProfileService.findByWalletAddress(req.user.address));
+  }
+
+  @Get('me/completeness')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get my profile completeness percentage',
+    description:
+      'Returns the completeness percentage (0-100) of the authenticated user profile based on ' +
+      'weighted field completion. Use the breakdown endpoint for detailed field-by-field analysis.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile completeness percentage',
+    schema: {
+      type: 'object',
+      properties: {
+        completeness: {
+          type: 'number',
+          description: 'Completeness percentage (0-100)',
+          example: 65,
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Profile not found' })
+  async getMyCompleteness(@Req() req: AuthenticatedRequest) {
+    const profile = await this.userProfileService.findByWalletAddress(req.user.address);
+    return { completeness: calculateProfileCompleteness(profile) };
+  }
+
+  @Get('me/completeness/breakdown')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Get detailed profile completeness breakdown',
+    description:
+      'Returns a detailed breakdown of profile completeness by field, showing which fields are ' +
+      'completed, their weights, and individual contributions to the total score. Useful for ' +
+      'guiding users on how to improve their profile.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Detailed completeness breakdown',
+    schema: {
+      type: 'object',
+      properties: {
+        totalCompleteness: {
+          type: 'number',
+          description: 'Overall completeness percentage',
+          example: 65,
+        },
+        fields: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              fieldName: { type: 'string', example: 'bio' },
+              weight: { type: 'number', example: 15 },
+              completed: { type: 'boolean', example: true },
+              contribution: { type: 'number', example: 15 },
+            },
+          },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'Profile not found' })
+  async getMyCompletenessBreakdown(@Req() req: AuthenticatedRequest) {
+    const profile = await this.userProfileService.findByWalletAddress(req.user.address);
+    return getProfileCompletenessBreakdown(profile);
+  }
+
+  @Get(':id/completeness')
+  @ApiOperation({
+    summary: 'Get profile completeness percentage by ID',
+    description:
+      'Returns the completeness percentage (0-100) of any user profile. This is a public endpoint.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'Profile ID',
+    example: '123e4567-e89b-12d3-a456-426614174000',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Profile completeness percentage',
+    schema: {
+      type: 'object',
+      properties: {
+        completeness: {
+          type: 'number',
+          description: 'Completeness percentage (0-100)',
+          example: 85,
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 404, description: 'Profile not found' })
+  async getProfileCompleteness(@Param('id') id: string) {
+    const profile = await this.userProfileService.findById(id);
+    return { completeness: calculateProfileCompleteness(profile) };
   }
 
   @Get()
